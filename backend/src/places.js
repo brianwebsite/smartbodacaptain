@@ -49,15 +49,21 @@ export function photonPlaces({
   async function getJson(url) {
     const hit = cache.get(url);
     if (hit && now() - hit.at < TTL_MS) return hit.value;
-    const res = await fetchImpl(url, {
-      headers: {
-        Accept: 'application/json',
-        'User-Agent': 'SmartBoda/0.1 (+https://github.com/brianwebsite/smartbodacaptain)',
-      },
-      signal: AbortSignal.timeout(6000),
-    });
-    if (!res.ok) throw new Error(`place search answered ${res.status}`);
-    const value = await res.json();
+    let value;
+    try {
+      const res = await fetchImpl(url, {
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'SmartBoda/0.1 (+https://github.com/brianwebsite/smartbodacaptain)',
+        },
+        signal: AbortSignal.timeout(4000),
+      });
+      if (!res.ok) throw new Error(`place search answered ${res.status}`);
+      value = await res.json();
+    } catch (err) {
+      if (hit) return hit.value; // an old answer is better than none while the service is slow
+      throw err;
+    }
     if (cache.size >= MAX_CACHE) cache.delete(cache.keys().next().value);
     cache.set(url, { at: now(), value });
     return value;
@@ -70,7 +76,7 @@ export function photonPlaces({
     async search(query, near) {
       const q = clean(query);
       if (q.length < 2) return [];
-      const params = new URLSearchParams({ q: q.slice(0, 80), limit: '8', lang: 'en', bbox: UGANDA_BBOX });
+      const params = new URLSearchParams({ q: q.slice(0, 80).toLowerCase(), limit: '8', lang: 'en', bbox: UGANDA_BBOX });
       if (near) {
         params.set('lat', near.lat.toFixed(2));
         params.set('lon', near.lng.toFixed(2));

@@ -21,10 +21,10 @@ async function start({ google = false } = {}) {
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const call = async (method, path, body) => {
+  const call = async (method, path, body, token) => {
     const res = await fetch(base + path, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     return { status: res.status, body: await res.json() };
@@ -94,16 +94,24 @@ test('Google: a new person is signed up straight away (no phone needed); next ti
   close();
 });
 
-test('Google: rejected token, and a typed email is never taken over', async () => {
+test('Google: rejected token; an existing email account is linked and its old password stops working', async () => {
   const { call, close } = await start({ google: true });
   assert.equal((await call('POST', '/api/auth/google', { idToken: 'bad:1:a@b.co' })).status, 401);
 
   await call('POST', '/api/auth/register', {
     role: 'passenger', name: 'Victim', phone: '0772300020', email: 'victim@gmail.com', password: 'secret123',
   });
-  const hijack = await call('POST', '/api/auth/google', { idToken: 'ok:g9:victim@gmail.com:Victim', phone: '0772300021' });
-  assert.equal(hijack.status, 409);
-  assert.equal(hijack.body.code, 'email_taken');
+  const old = await call('POST', '/api/auth/login', { identifier: 'victim@gmail.com', password: 'secret123' });
+  assert.equal(old.status, 200);
+  const linked = await call('POST', '/api/auth/google', { idToken: 'ok:g9:victim@gmail.com:Victim' });
+  assert.equal(linked.status, 200);
+  assert.equal(linked.body.user.id, old.body.user.id); // signed in to the same account, not a new one
+  // Whoever typed the email at sign-up can no longer get in with that password or old sign-in.
+  assert.equal((await call('POST', '/api/auth/login', { identifier: 'victim@gmail.com', password: 'secret123' })).status, 401);
+  assert.equal((await call('GET', '/api/me', undefined, old.body.token)).status, 401);
+  { const me = await call('GET', '/api/me', undefined, linked.body.token); assert.equal(me.status, 200, JSON.stringify([me.body, linked.body])); }
+  // And Google keeps working next time.
+  assert.equal((await call('POST', '/api/auth/google', { idToken: 'ok:g9:victim@gmail.com:Victim' })).body.user.id, old.body.user.id);
   close();
 });
 

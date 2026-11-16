@@ -55,7 +55,7 @@ class _SearchScreenState extends State<SearchScreen> {
       }
     });
     if (q.length < 2) return;
-    _debounce = Timer(const Duration(milliseconds: 350), () => _search(q));
+    _debounce = Timer(const Duration(milliseconds: 200), () => _search(q));
   }
 
   Future<void> _search(String q) async {

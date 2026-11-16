@@ -81,12 +81,18 @@ class _AuthScreenState extends State<AuthScreen> {
   String? _googleClientId;
   String? _googleIdToken;
 
+  /// True when this phone has had an account before: then "Sign in" is the main button.
+  bool _returning = false;
+
   bool get _isCaptain => widget.session.role == 'captain';
   bool get _googleAvailable => !_isCaptain && _googleClientId != null;
 
   @override
   void initState() {
     super.initState();
+    Session.hasSignedInBefore().then((v) {
+      if (mounted && v) setState(() => _returning = true);
+    });
     if (!_isCaptain) {
       widget.session.googleServerClientId().then((id) {
         if (mounted) setState(() => _googleClientId = id);
@@ -317,7 +323,6 @@ class _AuthScreenState extends State<AuthScreen> {
     });
     try {
       final gs = GoogleSignIn(scopes: const ['email'], serverClientId: clientId);
-      await gs.signOut();
       final account = await gs.signIn();
       if (account == null) return; // the person closed the Google window
       final token = (await account.authentication).idToken;
@@ -438,9 +443,15 @@ class _AuthScreenState extends State<AuthScreen> {
             style: t.bodyLarge,
           ),
           const Spacer(),
-          FilledButton(onPressed: () => _go(_Mode.signUp), child: const Text('Create an account')),
-          const SizedBox(height: 12),
-          OutlinedButton(onPressed: () => _go(_Mode.signIn), child: const Text('I already have an account')),
+          if (_returning) ...[
+            FilledButton(onPressed: () => _go(_Mode.signIn), child: const Text('Sign in')),
+            const SizedBox(height: 12),
+            OutlinedButton(onPressed: () => _go(_Mode.signUp), child: const Text('Create a new account')),
+          ] else ...[
+            FilledButton(onPressed: () => _go(_Mode.signUp), child: const Text('Create an account')),
+            const SizedBox(height: 12),
+            OutlinedButton(onPressed: () => _go(_Mode.signIn), child: const Text('I already have an account')),
+          ],
           const SizedBox(height: 8),
         ],
       ),

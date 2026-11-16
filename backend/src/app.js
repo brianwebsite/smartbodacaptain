@@ -524,10 +524,23 @@ export function createApp({
       if (existing.status === 'suspended') throw new HttpError(403, 'This account is suspended', 'suspended');
       return startSession(existing);
     }
-    // Never attach Google to an account that was made with a typed email: nobody
-    // proved they own that address, so linking could hand the account to a stranger.
-    if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(g.email)) {
-      throw new HttpError(409, 'That email already has an account. Sign in with your password instead.', 'email_taken');
+    // Same email as an account made with a typed email. Google has verified this address, so the
+    // person here owns it: attach Google to that account. Whoever typed the email at sign-up never
+    // proved they owned it, so the old password is replaced and old sign-ins are ended. That stops
+    // someone who pre-registered another person's email from keeping access.
+    const sameEmail = db.prepare('SELECT * FROM users WHERE email = ?').get(g.email);
+    if (sameEmail) {
+      if (sameEmail.role !== 'passenger') {
+        throw new HttpError(409, 'That email belongs to a captain account. Use the Smart Boda Captain app.', 'email_taken');
+      }
+      if (sameEmail.status === 'suspended') throw new HttpError(403, 'This account is suspended', 'suspended');
+      transaction(db, () => {
+        db.prepare('UPDATE users SET google_sub = ?, password_hash = ? WHERE id = ?').run(
+          g.sub, hashPassword(randomUUID() + randomUUID()), sameEmail.id,
+        );
+        db.prepare('DELETE FROM sessions WHERE user_id = ?').run(sameEmail.id);
+      });
+      return startSession(getUser(sameEmail.id));
     }
     const name = (typeof body.name === 'string' && body.name.trim()) || g.name;
     if (name.trim().length < 2) {

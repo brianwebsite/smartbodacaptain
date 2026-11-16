@@ -27,33 +27,32 @@ class _CaptainAppState extends State<CaptainApp> {
       theme: bodaTheme(),
       home: ListenableBuilder(
         listenable: _session,
-        builder: (context, _) {
-          if (_session.loading) {
-            return const Scaffold(body: Center(child: CircularProgressIndicator()));
-          }
-          if (_session.loadError != null) {
-            return Scaffold(
-              body: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(_session.loadError!, textAlign: TextAlign.center),
-                      const SizedBox(height: 16),
-                      FilledButton(onPressed: _session.load, child: const Text('Try again')),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          }
-          if (_session.user == null) {
-            return AuthScreen(session: _session, appTitle: 'Smart Boda Captain');
-          }
-          return Shell(session: _session);
-        },
+        builder: (context, _) => Entrance(ready: !_session.loading, child: _screen()),
       ),
     );
+  }
+
+  Widget _screen() {
+    if (_session.loadError != null) {
+      return Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(_session.loadError!, textAlign: TextAlign.center),
+                const SizedBox(height: 16),
+                FilledButton(onPressed: _session.load, child: const Text('Try again')),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    if (_session.user == null) {
+      return AuthScreen(session: _session, appTitle: 'Smart Boda Captain');
+    }
+    return Shell(session: _session);
   }
 }

@@ -22,6 +22,16 @@ class Session extends ChangeNotifier {
   String? loadError;
 
   static const _tokenKey = 'smartboda_token';
+  static const _seenKey = 'smartboda_signed_in_before';
+
+  /// True when someone has signed in or registered on this phone before.
+  static Future<bool> hasSignedInBefore() async {
+    try {
+      return (await SharedPreferences.getInstance()).getBool(_seenKey) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
 
   Future<void> load() async {
     loading = true;
@@ -129,6 +139,7 @@ class Session extends ChangeNotifier {
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_tokenKey, token);
+    await prefs.setBool(_seenKey, true);
     api.token = token;
     user = u;
     notifyListeners();
