@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
+import 'api.dart';
 import 'format.dart';
 import 'models.dart';
 import 'phone_actions.dart';
+import 'profile_photo.dart';
 import 'theme.dart';
 import 'vehicle.dart';
 
@@ -30,18 +32,19 @@ class Stars extends StatelessWidget {
 }
 
 /// Everything a passenger should know about their captain, laid out clearly.
-Future<void> showCaptainDetails(BuildContext context, CaptainInfo c, {VoidCallback? onMessage}) {
+Future<void> showCaptainDetails(BuildContext context, ApiClient api, CaptainInfo c, {VoidCallback? onMessage}) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
-    builder: (sheetContext) => _CaptainDetails(captain: c, onMessage: onMessage),
+    builder: (sheetContext) => _CaptainDetails(api: api, captain: c, onMessage: onMessage),
   );
 }
 
 class _CaptainDetails extends StatelessWidget {
-  const _CaptainDetails({required this.captain, this.onMessage});
+  const _CaptainDetails({required this.api, required this.captain, this.onMessage});
 
+  final ApiClient api;
   final CaptainInfo captain;
   final VoidCallback? onMessage;
 
@@ -59,14 +62,7 @@ class _CaptainDetails extends StatelessWidget {
           children: [
             Row(
               children: [
-                CircleAvatar(
-                  radius: 32,
-                  backgroundColor: brandPrimary,
-                  child: Text(
-                    c.name.isEmpty ? '?' : c.name.trim()[0].toUpperCase(),
-                    style: const TextStyle(fontSize: 28, color: Colors.white, fontWeight: FontWeight.bold),
-                  ),
-                ),
+                ProfileAvatar(api: api, userId: c.id, name: c.name, photoVersion: c.photoVersion, radius: 32),
                 const SizedBox(width: 16),
                 Expanded(
                   child: Column(

@@ -67,7 +67,7 @@ export function backupFromEnv(env = process.env) {
       accessKeyId: v('BACKUP_S3_KEY_ID'),
       secretAccessKey: v('BACKUP_S3_SECRET'),
     }),
-    key: v('BACKUP_S3_OBJECT') || 'smartboda.db',
+    key: v('BACKUP_S3_OBJECT') || 'smartboda-app/smartboda.db', // its own folder, so other apps sharing the bucket are untouched
     intervalMs: Math.max(10, Number(v('BACKUP_INTERVAL_SECONDS')) || 30) * 1000,
   };
 }

@@ -79,7 +79,7 @@ async function harness() {
   const bal = (r) => ({
     free: wallet.creditFree(db, r.id), reserved: wallet.creditReserved(db, r.id), payable: wallet.earningsPayable(db, r.id),
   });
-  return { db, lp, call, admin, passenger, rider, topUp, request, accept, step, bal, clock, close: () => new Promise((r) => server.close(r)) };
+  return { base, db, lp, call, admin, passenger, rider, topUp, request, accept, step, bal, clock, close: () => new Promise((r) => server.close(r)) };
 }
 
 test('the brief: UGX 10,000 top-up, UGX 5,000 cash ride, UGX 500 commission', async () => {
@@ -324,5 +324,32 @@ test('backup number, public app info and the payments status check', async () =>
   const st = await h.call('GET', '/api/admin/payments-status', undefined, h.admin);
   assert.equal(st.body.topupsOn, true);
   assert.equal((await h.call('GET', '/api/admin/payments-status', undefined, pax.token)).status, 403);
+  await h.close();
+});
+
+test('captain photo: owner and the passenger on their trip can see it; strangers cannot', async () => {
+  const h = await harness();
+  const rider = await h.rider();
+  const pax = await h.passenger();
+  const stranger = await h.passenger();
+  await h.topUp(rider, 10000);
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(300, 7)]).toString('base64');
+  assert.equal((await h.call('PUT', '/api/me/photo', { image: 'aGVsbG8gaGVsbG8gaGVsbG8gaGVsbG8gaGVsbG8gaGVsbG8gaGVsbG8gaGVsbG8gaGVsbG8gaGVsbG8gaGVsbG8gaGVsbG8gaGVsbG8gaGVsbG8=' }, rider.token)).status, 400); // not an image
+  const up = await h.call('PUT', '/api/me/photo', { image: jpeg }, rider.token);
+  assert.equal(up.status, 200);
+  assert.equal(up.body.user.photoVersion, 1);
+  assert.equal((await h.call('PUT', '/api/me/photo', { image: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(46000, 1)]).toString('base64') }, rider.token)).status, 400); // too big
+
+  const t = (await h.request(pax)).body.trip;
+  await h.accept(rider, t.id);
+  const view = (await h.call('GET', `/api/trips/${t.id}`, undefined, pax.token)).body.trip;
+  assert.equal(view.captain.name, 'Rider');
+  assert.equal(view.captain.photoVersion, 1);
+  const raw = await fetch(`${h.base}/api/photos/${rider.id}`, { headers: { Authorization: `Bearer ${pax.token}` } });
+  assert.equal(raw.status, 200);
+  assert.equal(raw.headers.get('content-type'), 'image/jpeg');
+  assert.equal((await raw.arrayBuffer()).byteLength, 304);
+  const no = await fetch(`${h.base}/api/photos/${rider.id}`, { headers: { Authorization: `Bearer ${stranger.token}` } });
+  assert.equal(no.status, 404);
   await h.close();
 });

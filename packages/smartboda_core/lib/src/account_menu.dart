@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'api.dart';
 import 'format.dart';
 import 'phone_actions.dart';
+import 'profile_photo.dart';
 import 'session.dart';
 import 'theme.dart';
 import 'wallet_screen.dart';
@@ -91,16 +92,37 @@ class AccountMenu extends StatelessWidget {
           FadeSlideIn(
             child: Row(
               children: [
-                CircleAvatar(
-                  radius: 28,
-                  backgroundColor: brandPrimary,
-                  child: Text(
-                    u.name.isEmpty ? '?' : u.name.trim()[0].toUpperCase(),
-                    style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+                InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: () async {
+                    if (await pickAndUploadPhoto(context, session.api)) await session.refreshUser().catchError((_) {});
+                  },
+                  child: Stack(
+                    children: [
+                      ProfileAvatar(api: session.api, userId: u.id, name: u.name, photoVersion: u.photoVersion, radius: 32),
+                      const Positioned(
+                        right: 0,
+                        bottom: 0,
+                        child: CircleAvatar(radius: 11, backgroundColor: brandAccent, child: Icon(Icons.camera_alt, size: 13, color: Colors.black87)),
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(width: 14),
-                Expanded(child: Text(u.name, style: t.titleLarge?.copyWith(fontWeight: FontWeight.bold))),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(u.name, style: t.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+                      if (isCaptain)
+                        Text(
+                            u.photoVersion > 0
+                                ? 'Passengers see your name and picture'
+                                : 'Tap your picture to add a photo. Passengers see it.',
+                            style: t.bodySmall),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),

@@ -25,6 +25,7 @@ class AppUser {
     this.phone,
     this.email,
     this.backupPhone,
+    this.photoVersion = 0,
     this.bikePlate,
     this.bikeModel,
     this.vehicleType = 'boda',
@@ -42,6 +43,7 @@ class AppUser {
   final String? phone;
   final String? email;
   final String? backupPhone;
+  final int photoVersion;
   final String status;
   final String? bikePlate;
   final String? bikeModel;
@@ -67,6 +69,7 @@ class AppUser {
       phone: j['phone'] as String?,
       email: j['email'] as String?,
       backupPhone: j['backupPhone'] as String?,
+      photoVersion: (j['photoVersion'] as num?)?.toInt() ?? 0,
       status: j['status'] as String,
       bikePlate: cap?['bikePlate'] as String?,
       bikeModel: cap?['bikeModel'] as String?,
@@ -96,6 +99,7 @@ class CaptainInfo {
     this.memberSince,
     this.lat,
     this.lng,
+    this.photoVersion = 0,
   });
 
   final String id;
@@ -111,6 +115,7 @@ class CaptainInfo {
   final DateTime? memberSince;
   final double? lat;
   final double? lng;
+  final int photoVersion;
 
   factory CaptainInfo.fromJson(Map<String, dynamic> j) {
     final loc = j['location'] as Map<String, dynamic>?;
@@ -129,6 +134,7 @@ class CaptainInfo {
       memberSince: since == null ? null : DateTime.tryParse(since),
       lat: (loc?['lat'] as num?)?.toDouble(),
       lng: (loc?['lng'] as num?)?.toDouble(),
+      photoVersion: (j['photoVersion'] as num?)?.toInt() ?? 0,
     );
   }
 }

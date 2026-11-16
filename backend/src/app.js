@@ -173,6 +173,7 @@ export function createApp({
           bikeModel: p.bike_model,
           vehicleType: p.vehicle_type,
           stageName: p.stage_name,
+          photoVersion: u.photo_version ?? 0,
           rating: stats.rating,
           ratingCount: stats.ratingCount,
           completedTrips: stats.completedTrips,
@@ -595,7 +596,7 @@ export function createApp({
   // ---------- routes: any signed-in user ----------
 
   function meView(u) {
-    const view = { id: u.id, role: u.role, name: u.name, phone: u.phone, email: u.email ?? null, status: u.status, backupPhone: u.backup_phone ?? null };
+    const view = { id: u.id, role: u.role, name: u.name, phone: u.phone, email: u.email ?? null, status: u.status, backupPhone: u.backup_phone ?? null, photoVersion: u.photo_version ?? 0 };
     if (u.role === 'passenger') {
       view.wallet = { balance: wallet.balance(db, u.id), available: wallet.available(db, u.id) };
       view.standing = passengerStanding(passengerCancelCount(db, u.id, now()), now());
@@ -631,6 +632,47 @@ export function createApp({
       return { user: meView(getUser(user.id)) };
     },
     { roles: ['passenger', 'captain'] },
+  );
+
+  // A profile picture: small JPEG or PNG, sent as base64 text. Captains show theirs to passengers.
+  router.add(
+    'PUT',
+    '/api/me/photo',
+    ({ user, body }) => {
+      obj(body);
+      const b64 = typeof body.image === 'string' ? body.image : '';
+      if (!/^[A-Za-z0-9+/=]+$/.test(b64) || b64.length < 100) throw bad('Send the picture as base64 text', 'bad_photo');
+      const bytes = Buffer.from(b64, 'base64');
+      const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+      const png = bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      if (!jpeg && !png) throw bad('The picture must be a JPEG or PNG', 'bad_photo');
+      if (bytes.length > 45_000) throw bad('That picture is too big. Choose a smaller one.', 'photo_too_big');
+      db.prepare('UPDATE users SET photo = ?, photo_version = photo_version + 1 WHERE id = ?').run(bytes, user.id);
+      return { user: meView(getUser(user.id)) };
+    },
+    { roles: ['passenger', 'captain'] },
+  );
+
+  // Who may see a picture: its owner, an admin, and the other person on a trip they share.
+  router.add(
+    'GET',
+    '/api/photos/:id',
+    ({ user, params }) => {
+      const owner = db.prepare('SELECT id, photo FROM users WHERE id = ?').get(params.id);
+      if (!owner || !owner.photo) throw new HttpError(404, 'No picture');
+      const allowed =
+        user.role === 'admin' ||
+        user.id === owner.id ||
+        db
+          .prepare(
+            `SELECT 1 FROM trips WHERE (passenger_id = ? AND captain_id = ?) OR (passenger_id = ? AND captain_id = ?) LIMIT 1`,
+          )
+          .get(user.id, owner.id, owner.id, user.id);
+      if (!allowed) throw new HttpError(404, 'No picture');
+      const png = owner.photo[0] === 0x89;
+      return { binary: Buffer.from(owner.photo), contentType: png ? 'image/png' : 'image/jpeg' };
+    },
+    { roles: ['passenger', 'captain', 'admin'] },
   );
 
   // Contact details and social links, set by the admin. Public so the apps can show them.
@@ -1715,6 +1757,15 @@ export function createApp({
       const out = await route.handler({
         req, user, token, params, body, ip: clientIp(req), query: Object.fromEntries(url.searchParams),
       });
+      if (out && typeof out === 'object' && out.binary) {
+        res.writeHead(200, {
+          'Content-Type': out.contentType,
+          'Content-Length': out.binary.length,
+          'Cache-Control': 'private, max-age=86400',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        return res.end(out.binary);
+      }
       if (out && typeof out === 'object' && 'status' in out && 'body' in out) {
         return sendJson(res, out.status, out.body);
       }

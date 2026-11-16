@@ -1058,20 +1058,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           const SizedBox(height: 12),
           InkWell(
             borderRadius: BorderRadius.circular(14),
-            onTap: () => showCaptainDetails(context, c, onMessage: () => _openChat(t)),
+            onTap: () => showCaptainDetails(context, _api, c, onMessage: () => _openChat(t)),
             child: Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(border: Border.all(color: Colors.black12), borderRadius: BorderRadius.circular(14)),
               child: Row(
                 children: [
-                  CircleAvatar(
-                    radius: 24,
-                    backgroundColor: brandPrimary,
-                    child: Text(
-                      c.name.isEmpty ? '?' : c.name.trim()[0].toUpperCase(),
-                      style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
-                    ),
-                  ),
+                  ProfileAvatar(api: _api, userId: c.id, name: c.name, photoVersion: c.photoVersion, radius: 24),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(

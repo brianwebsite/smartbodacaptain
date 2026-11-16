@@ -189,6 +189,8 @@ function migrate(db) {
   addColumn('trips', 'night_percent', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('trips', 'auto_started', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('users', 'backup_phone', 'TEXT');
+  addColumn('users', 'photo', 'BLOB');
+  addColumn('users', 'photo_version', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('trips', 'pickup_pin', 'TEXT');
   addColumn('trips', 'pin_attempts', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('trips', 'pin_verified', 'INTEGER NOT NULL DEFAULT 0');
