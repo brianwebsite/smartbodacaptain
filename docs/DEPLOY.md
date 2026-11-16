@@ -108,3 +108,20 @@ Render's free plan wipes the disk on every deploy, which deletes all accounts an
 4. Redeploy. The log says `Database backup: nothing-to-restore` the first time and `restored` after later deploys.
 
 The database is copied every 30 seconds when something changed, and once more when Render stops the server. A crash can lose up to 30 seconds of changes. If the stored copy exists but cannot be read, the server refuses to start instead of replacing it with an empty database. A paid Render disk with `DB_PATH=/var/data/smartboda.db` is the simpler, safer option when you can afford it.
+
+## Email (Brevo, free: 300 emails a day)
+Used for password-reset codes and trip receipts.
+1. Sign up at brevo.com.
+2. Senders, Domains & Dedicated IPs > Senders > add a sender with your email address and confirm the link Brevo emails you. That address is `MAIL_FROM`.
+3. SMTP & API > API keys > Generate a new API key. Copy it (it starts with `xkeysib-`). That is `BREVO_API_KEY`.
+4. Security > Authorised IPs: turn the restriction off, because Render's address changes.
+5. Set `BREVO_API_KEY` and `MAIL_FROM` in Render and redeploy. The log says `Password reset email: on`.
+For best delivery to inboxes, send from your own domain (add Brevo's DNS records); a Gmail sender can land in spam.
+
+## Push notifications (Firebase Cloud Messaging, free)
+1. console.firebase.google.com > Add project (turn Google Analytics off).
+2. Project overview > Add app > Android. Package name `ug.smartboda.passenger`, then repeat for `ug.smartboda.captain`. Download each `google-services.json`.
+3. Put them in the repository as `apps/passenger/google-services.json` and `apps/captain/google-services.json`. The next build turns push on in the apps.
+4. Project settings > Service accounts > Generate new private key. Open the downloaded JSON file, copy ALL of its text, and set it in Render as `FIREBASE_SERVICE_ACCOUNT`. Keep this file secret; never commit it.
+5. Redeploy. The log says `Push notifications: on`. Install the new APKs, sign in, and allow notifications.
+Riders get a push for new nearby requests; passengers for accepted, arrived, started, completed and no-captain; both for messages and cancellations.
