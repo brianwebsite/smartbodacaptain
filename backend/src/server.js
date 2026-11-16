@@ -20,11 +20,28 @@ import { ensureAdmin } from './admin.js';
 import { photonPlaces } from './places.js';
 import { brevoMailer } from './mailer.js';
 import { livepayClient } from './livepay.js';
+import { backupFromEnv, restoreIfMissing, startBackups } from './backup.js';
 
 const port = Number.parseInt(process.env.PORT ?? '8080', 10);
 const dbPath = process.env.DB_PATH ?? './data/smartboda.db';
 mkdirSync(dirname(dbPath), { recursive: true });
+
+// On hosts that wipe the disk on every deploy, keep the database in S3-compatible storage.
+const backup = backupFromEnv();
+if (backup) {
+  try {
+    console.log(`Database backup: ${await restoreIfMissing(backup, dbPath)}`);
+  } catch (err) {
+    // Never start with an empty database when a backup exists but could not be read: that would
+    // overwrite the good backup with an empty one.
+    console.error(`Database restore failed: ${err.message}`);
+    process.exit(1);
+  }
+} else {
+  console.log('Database backup: off (set BACKUP_S3_* to keep data across redeploys)');
+}
 const db = openDb(dbPath);
+const backups = backup ? startBackups({ db, ...backup }) : null;
 
 ensureAdmin(db, process.env);
 
@@ -70,7 +87,8 @@ server.listen(port, () => console.log(`Smart Boda API listening on port ${port}`
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
-    server.close(() => {
+    server.close(async () => {
+      if (backups) await backups.flush();
       db.close();
       process.exit(0);
     });

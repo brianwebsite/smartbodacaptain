@@ -3,7 +3,7 @@
 import { scryptSync, randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 
 const KEY_LENGTH = 64;
-const SESSION_DAYS = 30;
+const SESSION_DAYS = 365; // people stay signed in until they sign out
 
 export function hashPassword(password) {
   const salt = randomBytes(16);

@@ -88,3 +88,23 @@ Passengers add money to their wallet through LivePay (3% collection fee, which S
 
 In LivePay, set the webhook URL to `PUBLIC_URL/api/livepay-webhook`. The log line `LivePay top-ups: on` confirms it. Money is added only after the server asks LivePay for the payment and the reference, amount and currency match, and never twice. The webhook is only a nudge; if it is missing, the app's own status check settles the payment.
 LivePay may require a fixed server IP to be whitelisted. Render's free plan has no fixed IP, so if LivePay refuses requests, that is why: move to a server with a fixed address.
+
+
+## Keep accounts and sign-ins across redeploys (free)
+Render's free plan wipes the disk on every deploy, which deletes all accounts and sign-ins. The server can copy its database to free S3-compatible storage and restore it at start-up.
+
+1. Cloudflare dashboard > R2 > create a bucket (for example `smartboda-db`). R2 has a free allowance; it asks for a card but does not charge within it.
+2. R2 > Manage API tokens > create a token with **Object Read & Write** for that bucket. Copy the Access Key ID, the Secret Access Key and the S3 endpoint (`https://<account>.r2.cloudflarestorage.com`).
+3. In Render > Environment add:
+
+| Name | Value |
+|---|---|
+| `BACKUP_S3_ENDPOINT` | the endpoint above |
+| `BACKUP_S3_BUCKET` | the bucket name |
+| `BACKUP_S3_KEY_ID` | Access Key ID |
+| `BACKUP_S3_SECRET` | Secret Access Key |
+| `BACKUP_S3_REGION` | `auto` for R2 (Backblaze B2: its region, for example `us-west-004`) |
+
+4. Redeploy. The log says `Database backup: nothing-to-restore` the first time and `restored` after later deploys.
+
+The database is copied every 30 seconds when something changed, and once more when Render stops the server. A crash can lose up to 30 seconds of changes. If the stored copy exists but cannot be read, the server refuses to start instead of replacing it with an empty database. A paid Render disk with `DB_PATH=/var/data/smartboda.db` is the simpler, safer option when you can afford it.
