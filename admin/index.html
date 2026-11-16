@@ -200,7 +200,7 @@ async function review(body) {
           h('td', {}, f.role === 'captain' ? 'rider' : f.role),
           h('td', {}, label[f.code] || f.code),
           h('td', {}, f.message),
-          h('td', { class: 'muted' }, f.tripIds.map((i) => i.slice(0, 8)).join(', ')))))))));
+          h('td', { class: 'muted' }, f.tripIds.map((i) => i.slice(0, 8)).join(', '))))))));
 }
 
 // ---------- captains ----------
