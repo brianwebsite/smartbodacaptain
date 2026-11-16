@@ -39,3 +39,12 @@ The whole database is one file: `/srv/smartboda-data/smartboda.db`. Copy it dail
 
 ## Without a Google key
 The server still works but shows fares from straight-line distance and labels them "approximate". Add `GOOGLE_MAPS_API_KEY` (Routes API enabled) for real road distances.
+
+## Free test server on Render (testing only)
+Render's free plan has no permanent disk: data is wiped when the service restarts or sleeps. Use it only to test sign-in and trips, never for real captains.
+
+1. Sign up at render.com with GitHub and allow it to read the `smartbodacaptain` repository.
+2. New > Web Service > pick the repository. Runtime: **Docker**. Dockerfile path: `backend/Dockerfile`. Root directory: leave empty. Instance type: **Free**.
+3. Environment variables: `ADMIN_PHONE`, `ADMIN_PASSWORD` (10+ characters), `TRUST_PROXY=1`. `GOOGLE_MAPS_API_KEY` is optional.
+4. Deploy. Render gives you an address like `https://smartboda-xxxx.onrender.com`. Open `/health` on it to check.
+5. Set the GitHub variable `API_BASE_URL` to that address and re-run the "Android apps" workflow.
