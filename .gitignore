@@ -27,3 +27,6 @@ dist/
 Thumbs.db
 *.log
 coverage/
+
+# The committed test key is deliberate (see android-debug/README.md)
+!android-debug/debug.keystore
