@@ -94,31 +94,48 @@ class _WalletScreenState extends State<WalletScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(widget.isCaptain ? 'Earned in wallet' : 'Smart Boda wallet',
+                  Text(widget.isCaptain ? 'Commission credit you can use' : 'Smart Boda wallet',
                       style: const TextStyle(color: Colors.white70, fontSize: 14)),
                   const SizedBox(height: 6),
-                  AnimatedMoney(w?.balance ?? 0, style: t.headlineLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.bold)),
+                  AnimatedMoney(widget.isCaptain ? (w?.creditFree ?? 0) : (w?.balance ?? 0), style: t.headlineLarge?.copyWith(color: Colors.white, fontWeight: FontWeight.bold)),
+                  if (widget.isCaptain && w != null && (w.creditReserved ?? 0) > 0) ...[
+                    const SizedBox(height: 6),
+                    Text('${ugx(w.creditReserved!)} more is set aside for trips you accepted',
+                        style: const TextStyle(color: Colors.white70)),
+                  ],
                   if (w != null && w.held > 0) ...[
                     const SizedBox(height: 6),
                     Text('${ugx(w.held)} is set aside for your trip', style: const TextStyle(color: Colors.white70)),
                   ],
-                  if (!widget.isCaptain) ...[
+                  ...[
                     const SizedBox(height: 16),
                     FilledButton.icon(
                       style: FilledButton.styleFrom(backgroundColor: brandAccent, foregroundColor: Colors.black87),
                       onPressed: _topup,
                       icon: const Icon(Icons.add),
-                      label: const Text('Add money'),
+                      label: Text(widget.isCaptain ? 'Add commission credit' : 'Add money'),
                     ),
                   ],
                 ],
               ),
             ),
           ),
+          if (widget.isCaptain && w != null) ...[
+            const SizedBox(height: 12),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.savings_outlined),
+                title: Text('Earnings paid through the app: ${ugx(w.balance)}'),
+                subtitle: const Text('From trips passengers paid in the app. Smart Boda pays this out to you.'),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           Text(
             widget.isCaptain
-                ? 'Trips passengers pay from their wallet are credited here. Smart Boda pays this out to you.'
+                ? 'Cash trips: the passenger pays you cash. Smart Boda takes only its commission, from your credit, when the trip is done. '
+                    'When you accept a cash trip, its commission is set aside. If the trip is cancelled it comes back. '
+                    'You need at least that much free credit to accept a cash trip.'
                 : 'Pay for trips from your wallet instead of cash. The fare is set aside when you ask for a ride and taken when it ends.',
             style: t.bodySmall,
           ),

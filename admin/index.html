@@ -170,8 +170,11 @@ async function overview(body) {
       card(s.completedTotal, 'Trips completed, all time'),
       card(ugx(s.grossTotal), 'Fares, all time'),
       card(ugx(s.commissionTotal), 'Commission earned, all time'),
-      card(ugx(s.commissionTotal - s.settledTotal), 'Commission still owed by captains'),
-      card(ugx(s.walletTotal), 'Money held in wallets'),
+      card(ugx(s.position.commissionRevenue), 'Company commission revenue (ledger)'),
+      card(ugx(s.position.unusedRiderCredit), 'Unused rider credit (not revenue)'),
+      card(ugx(s.position.reservedRiderCredit), 'Rider credit set aside for accepted trips'),
+      card(ugx(s.position.riderPayable), 'Payable to riders (app-paid trips)'),
+      card(ugx(s.position.passengerWallets), 'Passenger wallet balances'),
       card(s.captains, 'Captains registered'),
       card(s.passengers, 'Passengers registered')));
 }
@@ -194,7 +197,7 @@ async function captains(body) {
     h('td', {}, c.stageName || ''),
     h('td', {}, pill(c.status), c.online ? h('div', { class: 'muted' }, 'online') : null),
     h('td', {}, c.trips + ' trips', h('div', { class: 'muted' }, c.avgRating == null ? 'no ratings' : c.avgRating + ' / 5')),
-    h('td', {}, ugx(c.commissionOwed), h('div', { class: 'muted' }, 'wallet ' + ugx(c.walletBalance))),
+    h('td', {}, 'credit ' + ugx(c.creditFree), h('div', { class: 'muted' }, 'set aside ' + ugx(c.creditReserved) + ' · payable ' + ugx(c.walletBalance))),
     h('td', {}, pill(c.standing || 'ok')),
     h('td', {},
       c.status !== 'active' ? act('Approve', 'good', () => api('/api/admin/captains/' + c.id + '/approve', { method: 'POST', body: {} })) : null,
@@ -205,18 +208,18 @@ async function captains(body) {
         const amount = Number.parseInt(v.replace(/[, ]/g, ''), 10);
         await api('/api/admin/captains/' + c.id + '/payout', { method: 'POST', body: { amount, note: prompt('Note (for example MoMo reference)') || '' } });
       }) : null,
-      c.commissionOwed > 0 ? act('Record payment', '', async () => {
-        const v = prompt('Commission paid by ' + c.name + ' (UGX). Owed: ' + c.commissionOwed);
+      act('Add credit', '', async () => {
+        const v = prompt('Commission credit to add for ' + c.name + ' (UGX). Only after you received the money.');
         if (!v) throw new Error('Cancelled');
         const amount = Number.parseInt(v.replace(/[, ]/g, ''), 10);
-        const note = prompt('Note (for example MoMo reference)') || '';
-        await api('/api/admin/captains/' + c.id + '/settle', { method: 'POST', body: { amount, note } });
-      }) : null)));
+        const note = prompt('Reason (required, for example MoMo reference)') || '';
+        await api('/api/admin/users/' + c.id + '/wallet', { method: 'POST', body: { amount, note } });
+      }))));
   body.replaceChildren(
     h('h2', {}, 'Captains'), filters,
     h('div', { class: 'panel' }, list.length === 0 ? h('div', { class: 'empty' }, 'No captains here yet.') :
       h('table', {},
-        h('thead', {}, h('tr', {}, ['Captain', 'Bike', 'Documents to check', 'Stage', 'Status', 'Record', 'Owes / wallet', 'Standing', 'Actions'].map((t) => h('th', {}, t)))),
+        h('thead', {}, h('tr', {}, ['Captain', 'Bike', 'Documents to check', 'Stage', 'Status', 'Record', 'Commission credit', 'Standing', 'Actions'].map((t) => h('th', {}, t)))),
         h('tbody', {}, rows))));
 }
 
@@ -235,13 +238,13 @@ async function users(body) {
       h('table', {}, h('thead', {}, h('tr', {}, ['Person', 'Role', 'Wallet', 'Actions'].map((t) => h('th', {}, t)))),
         h('tbody', {}, list.map((u) => h('tr', {},
           h('td', {}, h('strong', {}, u.name), h('div', { class: 'muted' }, [u.phone, u.email].filter(Boolean).join(' · '))),
-          h('td', {}, u.role), h('td', {}, ugx(u.walletBalance)),
+          h('td', {}, u.role), h('td', {}, u.role === 'captain' ? 'credit ' + ugx(u.creditFree) + ' (set aside ' + ugx(u.creditReserved) + '), payable ' + ugx(u.walletBalance) : ugx(u.walletBalance)),
           h('td', {},
-            act('Add money', 'good', async () => {
+            act(u.role === 'captain' ? 'Add credit' : 'Add money', 'good', async () => {
               const v = prompt('Add to ' + u.name + "'s wallet (UGX). Use a minus sign to take money back.");
               if (!v) throw new Error('Cancelled');
               const amount = Number.parseInt(v.replace(/[, ]/g, ''), 10);
-              await api('/api/admin/users/' + u.id + '/wallet', { method: 'POST', body: { amount, note: prompt('Note (for example MoMo reference)') || '' } });
+              await api('/api/admin/users/' + u.id + '/wallet', { method: 'POST', body: { amount, note: prompt('Reason (required, for example MoMo reference)') || '' } });
             }),
             act('Reset password', '', async () => {
               const pw = prompt('New password for ' + u.name + ' (at least 6 characters). Tell them privately.');
@@ -322,7 +325,6 @@ async function settings(body) {
     nightPct: field('Night fare increase (%)', s.night.percent, '0.5'),
     nightFrom: field('Night starts (hour, 0-23, Uganda time)', s.night.startHour),
     nightTo: field('Night ends (hour, 0-23)', s.night.endHour),
-    debt: field('Captain debt limit: cannot go online above (UGX owed)', s.limits.captainDebtLimit),
     stale: field('Ignore locations older than (seconds)', s.dispatch.staleAfterSeconds), offer: field('Give up finding a captain after (seconds)', s.dispatch.offerSeconds),
   };
   const v = (k) => Number(f[k][1].value);
@@ -335,7 +337,7 @@ async function settings(body) {
         fare: { baseFare: v('baseFare'), perKm: v('perKm'), perMinute: v('perMinute'), minimumFare: v('minimumFare'), commissionRate: v('commission') / 100, roundTo: v('roundTo') },
         vehicles: { boda: { multiplier: v('mBoda') }, electric_boda: { multiplier: v('mElectric') }, car: { multiplier: v('mCar') }, car_xl: { multiplier: v('mCarXl') } },
         night: { percent: v('nightPct'), startHour: v('nightFrom'), endHour: v('nightTo') },
-        limits: { captainDebtLimit: v('debt'), deliveryMultiplier: v('delivery') },
+        limits: { deliveryMultiplier: v('delivery') },
         dispatch: { maxKm: v('maxKm'), limit: v('limit'), staleAfterSeconds: v('stale'), offerSeconds: v('offer') } } });
       status.textContent = 'Saved. New trips use these numbers.';
     } catch (ex) { status.className = 'err'; status.textContent = ex.message; }

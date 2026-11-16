@@ -38,15 +38,23 @@ Captains own their vehicles and pay their own costs. Smart Boda takes a commissi
 
 **Wallet trips (passenger pays from the Smart Boda wallet).** The fare is set aside when the ride is requested and moved when the trip ends. The captain's share goes to their wallet and Smart Boda's share stays with Smart Boda. If the captain owes commission from earlier cash trips, it is taken from this share first. Nothing can be skipped: the money moves only when the trip completes.
 
-**Cash trips (passenger pays the captain).** Smart Boda never touches the cash, so the commission is recorded as a debt the captain owes (admin: Captains, "Owes"). Three protections stop a captain simply never paying or never completing:
+**Cash trips (passenger pays the captain) use prepaid commission credit.** Smart Boda never touches the cash. Instead the rider keeps a credit balance with Smart Boda:
 
-1. **Debt limit.** Admin Settings, "Captain debt limit" (default UGX 50,000). A captain who owes more than that cannot go online or accept trips until the admin records a payment. This is the real protection: a captain who never pays stops earning, so the most Smart Boda can lose per captain is the limit.
-2. **The phone completes the trip, not only the captain.** The captain app sends its location every 4 seconds during a trip. The server marks the trip "arrived" near the pickup, "started" after the captain drives away from the pickup, and "completed" once they sit at the drop-off after a real ride (at least 2 minutes). So a captain who forgets (or chooses not to) tap start or complete still creates the debt. Trips started this way are flagged "auto-started" in the admin Trips list.
-3. **The passenger can see everything.** Every trip records who, where, when, the fare and the payment method. Passengers rate every trip, and captains rate passengers. The admin sees every cash trip and every commission owed.
+1. The rider tops up credit (for example UGX 10,000). This is *unused rider credit*, a liability, not revenue.
+2. A cash trip is only offered to a rider whose free credit covers that trip's commission. When the rider accepts, the commission (for example UGX 500 on a UGX 5,000 trip) is reserved. Two requests cannot reserve the same credit.
+3. When the trip completes the reservation becomes company commission revenue, exactly once. Credit goes from 10,000 to 9,500. The rider keeps the UGX 5,000 cash; there is no extra withdrawable balance.
+4. If the trip is cancelled or expires, the reservation is released exactly once.
+5. If free credit is too low, the rider sees how much more is needed. The wallet and top-up stay available. Trips paid in the app still work.
 
-**What can still go wrong with cash.** A captain who switches the app off during a trip, or a passenger and captain who agree to cheat together, will not be caught by software. Handle that with the debt limit, the ratings, and by suspending repeat offenders. Encourage wallet payments: they cannot be skipped.
+There is no rider debt. An accepted trip always finishes, because its commission is already reserved.
 
-**Best next step for collecting commission from cash trips.** Once LivePay collection works, let captains top up a "commission credit" (prepaid) instead of owing afterwards. This is how most boda apps avoid chasing debts.
+**Digital (wallet) trips.** The passenger pays from the Smart Boda wallet. At completion the ledger posts: fare out of the passenger wallet, commission to company revenue, the rest to "payable to rider". Payouts are manual and audited for now (admin records the payout after sending the money).
+
+**Ledger.** Every movement is a balanced double-entry journal with a unique reference; entries are never edited or deleted (database triggers block it); corrections are linked reversals. Admin overview shows revenue, unused credit, reserved credit, rider payables and passenger wallets separately.
+
+**Protections.** The phone completes the trip by location, so forgetting to tap does not avoid the commission. Credit is only added after LivePay confirms (signed webhook plus status check). Admin balance changes need a written reason and are recorded with the admin's id.
+
+**What software cannot stop.** A rider and passenger who agree to cheat, or a rider who switches the app off and takes the passenger privately, are not seen. Controls: receipts, trip sharing, support in the app, ratings, and reviewing riders with many cancellations.
 
 ## Penalties for cancelling (built and running now)
 Only cancels after a captain accepted count. Cancelling while "finding a captain" is free.

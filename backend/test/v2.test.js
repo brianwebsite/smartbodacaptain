@@ -51,6 +51,7 @@ async function harness({ start = '2026-11-16T10:00:00Z', mailer = null } = {}) {
     });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     await call('POST', `/api/admin/captains/${r.body.user.id}/approve`, {}, adminToken);
+    await call('POST', `/api/admin/users/${r.body.user.id}/wallet`, { amount: 100000, note: 'test credit' }, adminToken);
     const on = await call('POST', '/api/captain/presence', { online: true, ...where }, r.body.token);
     assert.equal(on.status, 200, JSON.stringify(on.body));
     return { token: r.body.token, id: r.body.user.id };
@@ -118,27 +119,7 @@ test('wallet: pay for a trip from the wallet; captain is credited once', async (
   assert.equal(after.body.held, 0);
   const capWallet = await h.call('GET', '/api/wallet', undefined, cap.token);
   assert.equal(capWallet.body.balance, Math.round(fare * 0.85));
-  assert.equal(after.body.entries[0].kind, 'trip_payment');
-  await h.close();
-});
-
-test('wallet earnings first pay off commission owed on cash trips', async () => {
-  const h = await harness();
-  const cap = await h.captain();
-  const p = await h.passenger();
-  await h.credit(p, 100000);
-  const cash = await h.request(p);
-  await h.accept(cap, cash.body.trip.id);
-  await h.finish(cap, cash.body.trip.id);
-  const owed = (await h.call('GET', '/api/captain/earnings', undefined, cap.token)).body.commissionOwed;
-  assert.ok(owed > 0);
-
-  const paid = await h.request(p, { paymentMethod: 'wallet' });
-  await h.accept(cap, paid.body.trip.id);
-  await h.finish(cap, paid.body.trip.id);
-  const e = (await h.call('GET', '/api/captain/earnings', undefined, cap.token)).body;
-  assert.equal(e.commissionOwed, 0);
-  assert.equal(e.walletBalance, paid.body.trip.fare - Math.round(paid.body.trip.fare * 0.15) - owed);
+  assert.equal(after.body.entries[0].kind, 'digital_trip');
   await h.close();
 });
 
@@ -246,24 +227,6 @@ test('cancelling before any captain accepted is free', async () => {
     await h.call('POST', `/api/trips/${t.body.trip.id}/cancel`, {}, p.token);
   }
   assert.equal((await h.call('GET', '/api/me', undefined, p.token)).body.user.standing.level, 'ok');
-  await h.close();
-});
-
-test('a captain who owes more commission than the limit cannot go online until they pay', async () => {
-  const h = await harness();
-  await h.call('PUT', '/api/admin/settings', { limits: { captainDebtLimit: 100 } }, h.adminToken);
-  const cap = await h.captain();
-  const p = await h.passenger();
-  const t = await h.request(p);
-  await h.accept(cap, t.body.trip.id);
-  await h.finish(cap, t.body.trip.id);
-  await h.call('POST', '/api/captain/presence', { online: false }, cap.token);
-  const blocked = await h.call('POST', '/api/captain/presence', { online: true, ...NEAR }, cap.token);
-  assert.equal(blocked.status, 403);
-  assert.equal(blocked.body.code, 'debt_limit');
-  const owed = (await h.call('GET', '/api/captain/earnings', undefined, cap.token)).body.commissionOwed;
-  await h.call('POST', `/api/admin/captains/${cap.id}/settle`, { amount: owed }, h.adminToken);
-  assert.equal((await h.call('POST', '/api/captain/presence', { online: true, ...NEAR }, cap.token)).status, 200);
   await h.close();
 });
 

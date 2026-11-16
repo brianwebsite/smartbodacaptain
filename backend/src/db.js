@@ -4,6 +4,8 @@
 
 import { DatabaseSync } from 'node:sqlite';
 
+import * as ledger from './ledger.js';
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -89,6 +91,34 @@ CREATE TABLE IF NOT EXISTS settlements (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ledger_journals (
+  id TEXT PRIMARY KEY,
+  ref TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL,
+  memo TEXT,
+  trip_id TEXT,
+  actor_id TEXT,
+  reversal_of TEXT REFERENCES ledger_journals(id),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ledger_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  journal_id TEXT NOT NULL REFERENCES ledger_journals(id),
+  account TEXT NOT NULL,
+  amount INTEGER NOT NULL CHECK (amount <> 0)
+);
+CREATE INDEX IF NOT EXISTS ledger_entries_account ON ledger_entries(account);
+CREATE INDEX IF NOT EXISTS ledger_entries_journal ON ledger_entries(journal_id);
+-- Posted entries are history: they can never be changed or deleted.
+CREATE TRIGGER IF NOT EXISTS ledger_entries_no_update BEFORE UPDATE ON ledger_entries
+  BEGIN SELECT RAISE(ABORT, 'ledger entries cannot be changed'); END;
+CREATE TRIGGER IF NOT EXISTS ledger_entries_no_delete BEFORE DELETE ON ledger_entries
+  BEGIN SELECT RAISE(ABORT, 'ledger entries cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS ledger_journals_no_update BEFORE UPDATE ON ledger_journals
+  BEGIN SELECT RAISE(ABORT, 'ledger journals cannot be changed'); END;
+CREATE TRIGGER IF NOT EXISTS ledger_journals_no_delete BEFORE DELETE ON ledger_journals
+  BEGIN SELECT RAISE(ABORT, 'ledger journals cannot be deleted'); END;
+
 CREATE TABLE IF NOT EXISTS wallet_ledger (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
@@ -151,6 +181,7 @@ function migrate(db) {
   addColumn('trips', 'vehicle_type', "TEXT NOT NULL DEFAULT 'boda'");
   addColumn('trips', 'cancel_reason', 'TEXT');
   addColumn('trips', 'cancelled_by', 'TEXT');
+  addColumn('topups', 'purpose', "TEXT NOT NULL DEFAULT 'passenger_wallet'");
   addColumn('trips', 'kind', "TEXT NOT NULL DEFAULT 'ride'");
   addColumn('trips', 'delivery_item', 'TEXT');
   addColumn('trips', 'receiver_name', 'TEXT');
@@ -159,8 +190,26 @@ function migrate(db) {
   addColumn('trips', 'auto_started', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('trips', 'passenger_rating', 'INTEGER');
   addColumn('trips', 'passenger_rating_comment', 'TEXT');
+  moveOldWalletRows(db);
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email) WHERE email IS NOT NULL');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_google_unique ON users(google_sub) WHERE google_sub IS NOT NULL');
+}
+
+/** Entries from the first, single-entry wallet become balanced journals once. */
+function moveOldWalletRows(db) {
+  const rows = db
+    .prepare(
+      `SELECT w.id, w.user_id, w.amount, w.kind, w.created_at, u.role FROM wallet_ledger w JOIN users u ON u.id = w.user_id
+       ORDER BY w.rowid`,
+    )
+    .all();
+  for (const r of rows) {
+    const account = r.role === 'captain' ? `rider_payable:${r.user_id}` : `passenger_wallet:${r.user_id}`;
+    ledger.post(db, {
+      ref: `legacy:${r.id}`, kind: `legacy_${r.kind}`, memo: 'Moved from the first wallet', at: r.created_at,
+      entries: [{ account: 'company_bank', amount: r.amount }, { account, amount: -r.amount }],
+    });
+  }
 }
 
 function rebuildUsersWithOptionalPhone(db) {

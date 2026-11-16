@@ -65,20 +65,23 @@ class _EarningsScreenState extends State<EarningsScreen> {
                     ),
                   ),
                   Card(
-                    color: e.commissionOwed > 0 ? const Color(0xFFFFF4E0) : null,
+                    color: e.creditFree < 1000 ? const Color(0xFFFFF4E0) : null,
                     child: ListTile(
                       leading: const Icon(Icons.account_balance_wallet),
-                      title: Text('Fee to pay Smart Boda: ${ugx(e.commissionOwed)}'),
-                      subtitle: Text(e.debtLimit > 0
-                          ? 'Fees from cash trips. If this goes above ${ugx(e.debtLimit)} you cannot go online until you pay. Wallet trips pay it off automatically.'
-                          : 'Fees from cash trips. Pay as agreed with Smart Boda.'),
+                      title: Text('Commission credit: ${ugx(e.creditFree)}'),
+                      subtitle: Text(
+                          '${e.creditReserved > 0 ? '${ugx(e.creditReserved)} is set aside for trips you accepted. ' : ''}'
+                          'You need free credit to accept cash trips. Tap to add more.'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(builder: (_) => WalletScreen(api: widget.api, isCaptain: true))),
                     ),
                   ),
                   Card(
                     child: ListTile(
                       leading: const Icon(Icons.savings_outlined),
-                      title: Text('Wallet: ${ugx(e.walletBalance)}'),
-                      subtitle: const Text('Earned from trips passengers paid by wallet. Smart Boda pays this out to you.'),
+                      title: Text('Paid through the app: ${ugx(e.walletBalance)}'),
+                      subtitle: const Text('Trips passengers paid in the app. Smart Boda pays this out to you.'),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: () => Navigator.of(context).push(
                           MaterialPageRoute<void>(builder: (_) => WalletScreen(api: widget.api, isCaptain: true))),

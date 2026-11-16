@@ -31,6 +31,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Offer> _offers = [];
   Trip? _trip;
   String? _error;
+  int? _creditNeeded;
   bool _busy = false;
 
   bool get _approved => _user.status == 'active';
@@ -82,8 +83,10 @@ class _HomeScreenState extends State<HomeScreen> {
         _afterTripEnded(before);
       }
       List<Offer> offers = [];
+      int? creditNeeded;
       if (trip == null && _online) {
         final o = await _api.get('/api/captain/offers');
+        creditNeeded = ((o['credit'] as Map<String, dynamic>?)?['creditNeeded'] as num?)?.toInt();
         offers = (o['offers'] as List<dynamic>)
             .map((e) => Offer.fromJson(e as Map<String, dynamic>))
             .toList();
@@ -92,6 +95,7 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() {
           _trip = trip;
           _offers = offers;
+          _creditNeeded = creditNeeded;
           if (trip != null) _online = true;
         });
       }
@@ -295,7 +299,7 @@ class _HomeScreenState extends State<HomeScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         StandingBanner(_user.standing),
-        _debtBanner(),
+        _creditBanner(),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: Text(_online ? 'You are online' : 'You are offline',
@@ -313,32 +317,36 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Warns when the fee owed to Smart Boda is getting close to the limit, or past it.
-  Widget _debtBanner() {
-    final owed = _user.commissionOwed;
-    final limit = _user.debtLimit;
-    if (limit <= 0 || owed <= limit * 0.6) return const SizedBox.shrink();
-    final over = owed > limit;
+  /// Says how much commission credit is missing to see cash trips.
+  Widget _creditBanner() {
+    final needed = _creditNeeded;
+    final low = _user.creditFree < 1000;
+    if (needed == null && !low) return const SizedBox.shrink();
     return FadeSlideIn(
       child: Container(
         margin: const EdgeInsets.only(bottom: 10),
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: (over ? const Color(0xFFB3261E) : const Color(0xFFB26A00)).withValues(alpha: 0.1),
+          color: const Color(0xFFB26A00).withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: over ? const Color(0xFFB3261E) : const Color(0xFFB26A00)),
+          border: Border.all(color: const Color(0xFFB26A00)),
         ),
         child: Row(
           children: [
-            Icon(Icons.payments_outlined, color: over ? const Color(0xFFB3261E) : const Color(0xFFB26A00)),
+            const Icon(Icons.account_balance_wallet_outlined, color: Color(0xFFB26A00)),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                over
-                    ? 'You owe Smart Boda ${ugx(owed)}. Pay it to go online and take trips again.'
-                    : 'You owe Smart Boda ${ugx(owed)} of your ${ugx(limit)} limit. Pay soon so you can keep taking trips.',
+                needed != null
+                    ? 'A cash trip near you needs ${ugx(needed)} more commission credit. Add credit to accept it.'
+                    : 'Your commission credit is ${ugx(_user.creditFree)}. Add credit to accept cash trips. Trips paid in the app still work.',
                 style: const TextStyle(fontWeight: FontWeight.w600),
               ),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(builder: (_) => WalletScreen(api: _api, isCaptain: true))),
+              child: const Text('Add'),
             ),
           ],
         ),

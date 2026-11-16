@@ -1,29 +1,26 @@
-// Money held for people on Smart Boda, as a ledger: every change is a row,
-// and the balance is the sum of the rows. Amounts are whole UGX.
-// Positive = money in, negative = money out.
+// Per-person views of the ledger, plus the money moves the apps trigger.
 //
-// Passengers: topup / admin_credit (+), trip_payment (-).
-// Captains:   trip_earning (+, for trips paid from the wallet), payout (-).
+// Passengers: one wallet (passenger_wallet).
+// Riders:     prepaid commission credit (free + reserved) and digital earnings payable.
 
-import { randomUUID } from 'node:crypto';
+import * as ledger from './ledger.js';
 
-export const LEDGER_KINDS = Object.freeze([
-  'topup',
-  'admin_credit',
-  'admin_debit',
-  'trip_payment',
-  'trip_earning',
-  'payout',
-  'commission_netted',
-]);
+const acct = {
+  credit: (id) => `rider_credit:${id}`,
+  reserved: (id) => `rider_reserved:${id}`,
+  payable: (id) => `rider_payable:${id}`,
+  withdrawal: (id) => `rider_withdrawal:${id}`,
+  wallet: (id) => `passenger_wallet:${id}`,
+};
+export { acct };
 
 const HOLD_STATUSES = ['requested', 'accepted', 'arrived', 'in_progress'];
 
-export function balance(db, userId) {
-  return db.prepare('SELECT COALESCE(SUM(amount),0) AS v FROM wallet_ledger WHERE user_id = ?').get(userId).v;
-}
+// ---------- passengers ----------
 
-/** Money already promised to trips that are still running. */
+export const balance = (db, userId) => ledger.balance(db, acct.wallet(userId));
+
+/** Fares already promised to digital trips that are still running. */
 export function held(db, userId) {
   const marks = HOLD_STATUSES.map(() => '?').join(',');
   return db
@@ -36,25 +33,116 @@ export function held(db, userId) {
 
 export const available = (db, userId) => balance(db, userId) - held(db, userId);
 
-/** Adds one ledger row. A trip can pay or earn only once, so a repeat does nothing. */
-export function addEntry(db, { userId, amount, kind, tripId = null, note = null, at }) {
-  if (!Number.isInteger(amount) || amount === 0) throw new RangeError('amount must be a whole number above or below 0');
-  if (!LEDGER_KINDS.includes(kind)) throw new RangeError(`unknown ledger kind: ${kind}`);
-  const res = db
-    .prepare(
-      `INSERT OR IGNORE INTO wallet_ledger (id, user_id, amount, kind, trip_id, note, created_at)
-       VALUES (?,?,?,?,?,?,?)`,
-    )
-    .run(randomUUID(), userId, amount, kind, tripId, note, at);
-  return res.changes === 1;
+// ---------- riders ----------
+
+export const creditFree = (db, riderId) => ledger.balance(db, acct.credit(riderId));
+export const creditReserved = (db, riderId) => ledger.balance(db, acct.reserved(riderId));
+export const earningsPayable = (db, riderId) => ledger.balance(db, acct.payable(riderId));
+export const pendingWithdrawals = (db, riderId) => ledger.balance(db, acct.withdrawal(riderId));
+
+// ---------- money in ----------
+
+/** Provider-confirmed top-up: passenger wallet or rider commission credit. */
+export function postTopup(db, { userId, role, amount, topupId, at }) {
+  return ledger.post(db, {
+    ref: `topup:${topupId}`, kind: role === 'captain' ? 'credit_topup' : 'wallet_topup', memo: `Mobile money ${topupId}`, at,
+    entries: [
+      { account: 'provider_clearing', amount },
+      { account: role === 'captain' ? acct.credit(userId) : acct.wallet(userId), amount: -amount },
+    ],
+  });
 }
 
-export function entries(db, userId, limit = 50) {
-  return db
-    .prepare(
-      `SELECT id, amount, kind, trip_id AS tripId, note, created_at AS createdAt
-       FROM wallet_ledger WHERE user_id = ? ORDER BY rowid DESC LIMIT ?`,
-    )
-    .all(userId, limit)
-    .map((r) => ({ ...r }));
+/** Staff adds money they received outside the provider (cash at the office, bank deposit). */
+export function postManual(db, { userId, role, amount, actorId, note, at, ref }) {
+  const target = role === 'captain' ? acct.credit(userId) : acct.wallet(userId);
+  return ledger.post(db, {
+    ref, kind: amount > 0 ? 'admin_credit' : 'admin_debit', memo: note, actorId, at,
+    entries: [
+      { account: 'company_bank', amount },
+      { account: target, amount: -amount },
+    ],
+  });
 }
+
+// ---------- trips ----------
+
+/** Cash trip accepted: set the commission aside so it cannot be spent twice. Returns false if already reserved. */
+export function reserveCommission(db, { riderId, tripId, commission, at }) {
+  return ledger.post(db, {
+    ref: `reserve:${tripId}`, kind: 'commission_reserved', tripId, at,
+    entries: [
+      { account: acct.credit(riderId), amount: commission },
+      { account: acct.reserved(riderId), amount: -commission },
+    ],
+  });
+}
+
+/** Cash trip cancelled or expired: give the reserved credit back, once. */
+export function releaseCommission(db, { riderId, tripId, commission, at }) {
+  if (!ledger.findJournal(db, `reserve:${tripId}`)) return false;
+  if (ledger.findJournal(db, `commission:${tripId}`)) return false; // already charged, nothing to release
+  return ledger.post(db, {
+    ref: `release:${tripId}`, kind: 'commission_released', tripId, at,
+    entries: [
+      { account: acct.reserved(riderId), amount: commission },
+      { account: acct.credit(riderId), amount: -commission },
+    ],
+  });
+}
+
+/** Cash trip completed: the reservation becomes one commission charge. */
+export function chargeCommission(db, { riderId, tripId, commission, at }) {
+  const reserved = ledger.findJournal(db, `reserve:${tripId}`) && !ledger.findJournal(db, `release:${tripId}`);
+  return ledger.post(db, {
+    ref: `commission:${tripId}`, kind: 'commission_charged', tripId, at,
+    entries: [
+      // Trips accepted before reservations existed are charged straight from free credit.
+      { account: reserved ? acct.reserved(riderId) : acct.credit(riderId), amount: commission },
+      { account: 'company_commission', amount: -commission },
+    ],
+  });
+}
+
+/** Digital trip completed: passenger pays, company keeps commission, rider is owed the rest. */
+export function settleDigitalTrip(db, { passengerId, riderId, tripId, fare, commission, earnings, at }) {
+  return ledger.post(db, {
+    ref: `trip:${tripId}`, kind: 'digital_trip', tripId, at,
+    entries: [
+      { account: acct.wallet(passengerId), amount: fare },
+      { account: 'company_commission', amount: -commission },
+      { account: acct.payable(riderId), amount: -earnings },
+    ],
+  });
+}
+
+// ---------- history shown to people ----------
+
+const LABEL_ACCOUNT = { wallet: 'passenger_wallet', credit: 'rider_credit', reserved: 'rider_reserved', earnings: 'rider_payable' };
+
+/** One person's money history, newest first, in plain terms. */
+export function entries(db, userId, limit = 60) {
+  const rows = db
+    .prepare(
+      `SELECT j.rowid AS rid, j.kind, j.memo, j.trip_id, j.created_at,
+         COALESCE(SUM(CASE WHEN e.account = ? THEN e.amount END),0) AS wallet,
+         COALESCE(SUM(CASE WHEN e.account IN (?,?) THEN e.amount END),0) AS credit,
+         COALESCE(SUM(CASE WHEN e.account = ? THEN e.amount END),0) AS earnings
+       FROM ledger_journals j JOIN ledger_entries e ON e.journal_id = j.id
+       WHERE e.account IN (?,?,?,?)
+       GROUP BY j.id ORDER BY j.rowid DESC LIMIT ?`,
+    )
+    .all(
+      acct.wallet(userId), acct.credit(userId), acct.reserved(userId), acct.payable(userId),
+      acct.wallet(userId), acct.credit(userId), acct.reserved(userId), acct.payable(userId), limit,
+    );
+  const out = [];
+  for (const r of rows) {
+    // Liabilities are credits (negative), so the person's balance moves by minus the sum.
+    for (const [account, v] of [['wallet', -r.wallet], ['credit', -r.credit], ['earnings', -r.earnings]]) {
+      if (v !== 0) out.push({ kind: r.kind, account, amount: v, note: r.memo, tripId: r.trip_id, createdAt: r.created_at });
+    }
+  }
+  return out;
+}
+export { LABEL_ACCOUNT };

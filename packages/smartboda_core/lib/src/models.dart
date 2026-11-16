@@ -30,8 +30,8 @@ class AppUser {
     this.online = false,
     this.walletBalance = 0,
     this.walletAvailable = 0,
-    this.commissionOwed = 0,
-    this.debtLimit = 0,
+    this.creditFree = 0,
+    this.creditReserved = 0,
     this.standing = const Standing(),
   });
 
@@ -47,8 +47,9 @@ class AppUser {
   final bool online;
   final int walletBalance;
   final int walletAvailable;
-  final int commissionOwed;
-  final int debtLimit;
+  /// Prepaid commission credit (riders): free to use, and set aside for accepted cash trips.
+  final int creditFree;
+  final int creditReserved;
   final Standing standing;
 
   /// What to show for contact details: phone, else email.
@@ -70,8 +71,8 @@ class AppUser {
       online: (cap?['online'] as bool?) ?? false,
       walletBalance: (w?['balance'] as num?)?.toInt() ?? 0,
       walletAvailable: (w?['available'] as num?)?.toInt() ?? 0,
-      commissionOwed: (j['commissionOwed'] as num?)?.toInt() ?? 0,
-      debtLimit: (j['debtLimit'] as num?)?.toInt() ?? 0,
+      creditFree: ((j['credit'] as Map<String, dynamic>?)?['free'] as num?)?.toInt() ?? 0,
+      creditReserved: ((j['credit'] as Map<String, dynamic>?)?['reserved'] as num?)?.toInt() ?? 0,
       standing: Standing.fromJson(j['standing'] as Map<String, dynamic>?),
     );
   }
@@ -394,14 +395,15 @@ class Earnings {
     required this.gross,
     required this.commission,
     required this.net,
-    required this.commissionOwed,
     required this.byDay,
-    this.debtLimit = 0,
+    this.creditFree = 0,
+    this.creditReserved = 0,
     this.walletBalance = 0,
     this.standing = const Standing(),
   });
 
-  final int debtLimit;
+  final int creditFree;
+  final int creditReserved;
   final int walletBalance;
   final Standing standing;
   final int days;
@@ -409,7 +411,6 @@ class Earnings {
   final int gross;
   final int commission;
   final int net;
-  final int commissionOwed;
   final List<DayEarning> byDay;
 
   factory Earnings.fromJson(Map<String, dynamic> j) {
@@ -420,8 +421,8 @@ class Earnings {
       gross: (t['gross'] as num).toInt(),
       commission: (t['commission'] as num).toInt(),
       net: (t['net'] as num).toInt(),
-      commissionOwed: (j['commissionOwed'] as num).toInt(),
-      debtLimit: (j['debtLimit'] as num?)?.toInt() ?? 0,
+      creditFree: ((j['credit'] as Map<String, dynamic>?)?['free'] as num?)?.toInt() ?? 0,
+      creditReserved: ((j['credit'] as Map<String, dynamic>?)?['reserved'] as num?)?.toInt() ?? 0,
       walletBalance: (j['walletBalance'] as num?)?.toInt() ?? 0,
       standing: Standing.fromJson(j['standing'] as Map<String, dynamic>?),
       byDay: (j['byDay'] as List<dynamic>)
@@ -452,17 +453,32 @@ class Standing {
 }
 
 class WalletEntry {
-  const WalletEntry({required this.amount, required this.kind, required this.createdAt, this.note});
+  const WalletEntry({required this.amount, required this.kind, required this.createdAt, this.account = 'wallet', this.note});
 
   final int amount;
   final String kind;
+
+  /// wallet (passenger), credit (rider commission credit) or earnings (rider digital earnings).
+  final String account;
   final String? note;
   final DateTime createdAt;
 
   String get label {
     switch (kind) {
-      case 'topup':
+      case 'wallet_topup':
         return 'Money added';
+      case 'credit_topup':
+        return 'Commission credit added';
+      case 'commission_charged':
+        return 'Smart Boda commission for a cash trip';
+      case 'commission_reserved':
+        return 'Set aside for a cash trip';
+      case 'commission_released':
+        return 'Returned: the trip did not finish';
+      case 'digital_trip':
+        return account == 'wallet' ? 'Paid for a trip' : 'Earned from a trip paid in the app';
+      case 'manual_payout':
+        return 'Paid out to you';
       case 'admin_credit':
         return 'Money added by Smart Boda';
       case 'admin_debit':
@@ -483,6 +499,7 @@ class WalletEntry {
   factory WalletEntry.fromJson(Map<String, dynamic> j) => WalletEntry(
         amount: (j['amount'] as num).toInt(),
         kind: j['kind'] as String,
+        account: (j['account'] as String?) ?? 'wallet',
         note: j['note'] as String?,
         createdAt: DateTime.parse(j['createdAt'] as String),
       );
@@ -495,8 +512,14 @@ class WalletInfo {
     required this.available,
     required this.entries,
     required this.topupAvailable,
+    this.creditFree,
+    this.creditReserved,
+    this.pendingWithdrawals = 0,
   });
 
+  final int? creditFree;
+  final int? creditReserved;
+  final int pendingWithdrawals;
   final int balance;
   final int held;
   final int available;
@@ -508,6 +531,9 @@ class WalletInfo {
         held: (j['held'] as num).toInt(),
         available: (j['available'] as num).toInt(),
         topupAvailable: (j['topupAvailable'] as bool?) ?? false,
+        creditFree: ((j['credit'] as Map<String, dynamic>?)?['free'] as num?)?.toInt(),
+        creditReserved: ((j['credit'] as Map<String, dynamic>?)?['reserved'] as num?)?.toInt(),
+        pendingWithdrawals: (j['pendingWithdrawals'] as num?)?.toInt() ?? 0,
         entries: (j['entries'] as List<dynamic>)
             .map((e) => WalletEntry.fromJson(e as Map<String, dynamic>))
             .toList(),

@@ -55,6 +55,7 @@ async function harness() {
     });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     await call('POST', `/api/admin/captains/${r.body.user.id}/approve`, {}, adminToken);
+    await call('POST', `/api/admin/users/${r.body.user.id}/wallet`, { amount: 100000, note: 'test credit' }, adminToken);
     const on = await call('POST', '/api/captain/presence', { online: true, ...where }, r.body.token);
     assert.equal(on.status, 200, JSON.stringify(on.body));
     return { token: r.body.token, id: r.body.user.id };

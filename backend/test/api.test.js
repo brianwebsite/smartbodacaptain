@@ -74,6 +74,7 @@ async function harness() {
     const c = await captain(name);
     const a = await call('POST', `/api/admin/captains/${c.id}/approve`, {}, adminToken);
     assert.equal(a.status, 200);
+    await call('POST', `/api/admin/users/${c.id}/wallet`, { amount: 100000, note: 'test credit' }, adminToken);
     const on = await call('POST', '/api/captain/presence', { online: true, ...location }, c.token);
     assert.equal(on.status, 200, JSON.stringify(on.body));
     return c;
@@ -249,15 +250,13 @@ test('a full cash trip from request to rating, with earnings and commission', as
   assert.equal(earn.body.totals.gross, est.body.fare);
   assert.equal(earn.body.totals.commission + earn.body.totals.net, est.body.fare);
   assert.equal(earn.body.byDay.length, 1);
-  assert.equal(earn.body.commissionOwed, earn.body.totals.commission);
+  // Cash trip: the commission came out of the credit (100,000 minus the commission), nothing was added to earnings payable.
+  assert.equal(earn.body.credit.free, 100000 - earn.body.totals.commission);
+  assert.equal(earn.body.credit.reserved, 0);
+  assert.equal(earn.body.walletBalance, 0);
 
   const hist = await h.call('GET', '/api/trips/history', undefined, p.token);
   assert.equal(hist.body.trips.length, 1);
-
-  // Admin records that the captain paid some commission.
-  const owed = earn.body.commissionOwed;
-  const settle = await h.call('POST', `/api/admin/captains/${c.id}/settle`, { amount: owed - 100, note: 'MoMo' }, adminToken);
-  assert.equal(settle.body.commissionOwed, 100);
 
   const stats = await h.call('GET', '/api/admin/stats', undefined, adminToken);
   assert.equal(stats.body.completedTotal, 1);
