@@ -7,6 +7,7 @@ export 'src/captain_details.dart';
 export 'src/chat_screen.dart';
 export 'src/geo.dart';
 export 'src/phone_actions.dart';
+export 'src/receipt_sheet.dart';
 export 'src/vehicle.dart';
 export 'src/forgot_password_screen.dart';
 export 'src/format.dart';

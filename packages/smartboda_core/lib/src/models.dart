@@ -174,6 +174,7 @@ class Trip {
     this.nightPercent = 0,
     this.autoStarted = false,
     this.passengerRating,
+    this.pickupPin,
   });
 
   final String id;
@@ -202,6 +203,7 @@ class Trip {
   final int nightPercent;
   final bool autoStarted;
   final int? passengerRating;
+  final String? pickupPin;
 
   bool get isDelivery => kind == 'delivery';
 
@@ -238,6 +240,7 @@ class Trip {
         nightPercent: (j['nightPercent'] as num?)?.toInt() ?? 0,
         autoStarted: (j['autoStarted'] as bool?) ?? false,
         passengerRating: (j['passengerRating'] as num?)?.toInt(),
+        pickupPin: j['pickupPin'] as String?,
       );
 }
 

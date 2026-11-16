@@ -124,7 +124,7 @@ function renderLogin(message) {
 }
 
 // ---------- shell ----------
-const TABS = [['overview', 'Overview'], ['captains', 'Captains'], ['users', 'Users & wallets'], ['live', 'Live'], ['trips', 'Trips'], ['settings', 'Settings']];
+const TABS = [['overview', 'Overview'], ['captains', 'Captains'], ['users', 'Users & wallets'], ['live', 'Live'], ['trips', 'Trips'], ['review', 'Review'], ['settings', 'Settings']];
 
 function renderShell() {
   const nav = h('nav', {}, TABS.map(([id, label]) => {
@@ -137,7 +137,7 @@ function renderShell() {
     h('header', {}, h('h1', {}, 'Smart Boda Admin'), h('button', { onclick: signOut }, 'Sign out')),
     nav, body);
   clearInterval(state.timer);
-  const views = { overview, captains, users, live, trips, settings };
+  const views = { overview, captains, users, live, trips, review, settings };
   const run = () => views[state.tab](body).catch((e) => { if (e.message !== 'Signed out') body.replaceChildren(h('div', { class: 'err' }, e.message)); });
   run();
   if (state.tab === 'live' || state.tab === 'overview') state.timer = setInterval(run, 6000);
@@ -177,6 +177,23 @@ async function overview(body) {
       card(ugx(s.position.passengerWallets), 'Passenger wallet balances'),
       card(s.captains, 'Captains registered'),
       card(s.passengers, 'Passengers registered')));
+}
+
+// ---------- review flags ----------
+async function review(body) {
+  const { flags } = await api('/api/admin/flags');
+  const label = { many_cancels: 'Many cancellations', late_cancels: 'Cancelled after arriving', cancel_near_pickup: 'Cancelled right at the pickup', unverified_starts: 'Started without passenger code' };
+  body.replaceChildren(h('h2', {}, 'Review'),
+    h('p', { class: 'muted' }, 'Patterns from the last 7 days that deserve a look, for example a rider cancelling at the pickup and taking the passenger privately. These are signs, not proof: GPS can be wrong, so nothing here charges or blocks anyone. Check the trips, call the people, then decide.'),
+    h('div', { class: 'panel' }, flags.length === 0 ? h('div', { class: 'empty' }, 'Nothing to review.') :
+      h('table', {},
+        h('thead', {}, h('tr', {}, ['Person', 'Role', 'Sign', 'What we saw', 'Trips'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, flags.map((f) => h('tr', {},
+          h('td', {}, h('strong', {}, f.name), h('div', { class: 'muted' }, f.phone || '')),
+          h('td', {}, f.role === 'captain' ? 'rider' : f.role),
+          h('td', {}, label[f.code] || f.code),
+          h('td', {}, f.message),
+          h('td', { class: 'muted' }, f.tripIds.map((i) => i.slice(0, 8)).join(', ')))))))));
 }
 
 // ---------- captains ----------

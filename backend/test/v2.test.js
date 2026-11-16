@@ -59,7 +59,7 @@ async function harness({ start = '2026-11-16T10:00:00Z', mailer = null } = {}) {
   const request = (p, extra = {}) =>
     call('POST', '/api/trips', { pickup: PICKUP, dropoff: DROPOFF, paymentMethod: 'cash', ...extra }, p.token);
   const accept = (c, id) => call('POST', `/api/trips/${id}/accept`, {}, c.token);
-  const step = (c, id, what) => call('POST', `/api/trips/${id}/${what}`, {}, c.token);
+  const step = (c, id, what) => call('POST', `/api/trips/${id}/${what}`, what === 'start' ? { pin: db.prepare('SELECT pickup_pin FROM trips WHERE id = ?').get(id).pickup_pin } : {}, c.token);
   const finish = async (c, id) => {
     for (const w of ['arrived', 'start', 'complete']) assert.equal((await step(c, id, w)).status, 200);
   };

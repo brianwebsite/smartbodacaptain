@@ -949,6 +949,25 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             title: '${distanceText(leg)} to go · about ${etaMinutes(leg)} min',
           ),
         ],
+        if (t.pickupPin != null) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: brandPrimary.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: brandPrimary.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.lock_outline, color: brandPrimary),
+                const SizedBox(width: 10),
+                const Expanded(child: Text('Your trip code. Tell it to the captain only when you are on board.')),
+                Text(t.pickupPin!, style: th.headlineSmall?.copyWith(fontWeight: FontWeight.bold, letterSpacing: 4)),
+              ],
+            ),
+          ),
+        ],
         if (t.status == 'arrived') ...[
           const SizedBox(height: 10),
           Row(

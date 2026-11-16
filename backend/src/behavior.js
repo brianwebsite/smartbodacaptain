@@ -106,3 +106,61 @@ export function passengerStanding({ count, lastAt }, nowIso) {
   }
   return out;
 }
+
+// ---- Review flags -------------------------------------------------------
+// These only point a person at records worth a look. They never charge or
+// block anyone: GPS can be wrong, so a human decides.
+
+export const FLAG_RULES = Object.freeze({
+  windowDays: 7,
+  manyCancels: 3, // cancels after a captain accepted
+  lateCancels: 2, // cancels after the captain said "arrived"
+  nearPickupCancels: 2, // captain cancelled while within nearPickupMeters of pickup
+  nearPickupMeters: 150,
+  unverifiedStarts: 3, // completed trips that started without the passenger's PIN
+});
+
+/** A list of { userId, name, role, code, message, count, tripIds } for the admin to review. */
+export function reviewFlags(db, nowIso) {
+  const since = new Date(Date.parse(nowIso) - FLAG_RULES.windowDays * 86400000).toISOString();
+  const out = [];
+  const add = (r, code, message, rows) =>
+    out.push({ userId: r.id, name: r.name, phone: r.phone, role: r.role, code, message, count: rows.length, tripIds: rows.map((x) => x.id) });
+
+  const cancelled = db
+    .prepare(
+      `SELECT t.id, t.cancelled_by, t.cancelled_from, t.cancel_distance_m, t.passenger_id, t.captain_id
+       FROM trips t WHERE t.status = 'cancelled' AND t.captain_id IS NOT NULL AND t.updated_at >= ?`,
+    )
+    .all(since);
+  const user = (id) => db.prepare('SELECT id, name, phone, role FROM users WHERE id = ?').get(id);
+  const group = (rows, key) => {
+    const m = new Map();
+    for (const r of rows) m.set(r[key], [...(m.get(r[key]) ?? []), r]);
+    return m;
+  };
+  const byCaptain = group(cancelled.filter((r) => r.cancelled_by === 'captain'), 'captain_id');
+  for (const [id, rows] of byCaptain) {
+    const u = user(id);
+    if (rows.length >= FLAG_RULES.manyCancels) add(u, 'many_cancels', `Cancelled ${rows.length} accepted trips in ${FLAG_RULES.windowDays} days`, rows);
+    const late = rows.filter((r) => r.cancelled_from === 'arrived');
+    if (late.length >= FLAG_RULES.lateCancels) add(u, 'late_cancels', `Cancelled ${late.length} trips after arriving at the pickup`, late);
+    const near = rows.filter((r) => r.cancel_distance_m != null && r.cancel_distance_m <= FLAG_RULES.nearPickupMeters);
+    if (near.length >= FLAG_RULES.nearPickupCancels) {
+      add(u, 'cancel_near_pickup', `Cancelled ${near.length} trips while within ${FLAG_RULES.nearPickupMeters} m of the passenger (may be taking them privately)`, near);
+    }
+  }
+  const byPassenger = group(cancelled.filter((r) => r.cancelled_by === 'passenger'), 'passenger_id');
+  for (const [id, rows] of byPassenger) {
+    if (rows.length >= FLAG_RULES.manyCancels) add(user(id), 'many_cancels', `Cancelled ${rows.length} accepted trips in ${FLAG_RULES.windowDays} days`, rows);
+  }
+  const unverified = db
+    .prepare(
+      `SELECT id, captain_id FROM trips WHERE status = 'completed' AND pin_verified = 0 AND pickup_pin IS NOT NULL AND completed_at >= ?`,
+    )
+    .all(since);
+  for (const [id, rows] of group(unverified, 'captain_id')) {
+    if (rows.length >= FLAG_RULES.unverifiedStarts) add(user(id), 'unverified_starts', `${rows.length} trips started without the passenger's PIN`, rows);
+  }
+  return out;
+}

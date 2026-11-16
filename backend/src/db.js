@@ -188,6 +188,12 @@ function migrate(db) {
   addColumn('trips', 'receiver_phone', 'TEXT');
   addColumn('trips', 'night_percent', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('trips', 'auto_started', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('trips', 'pickup_pin', 'TEXT');
+  addColumn('trips', 'pin_attempts', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('trips', 'pin_verified', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('trips', 'commission_rate', 'REAL');
+  addColumn('trips', 'cancelled_from', 'TEXT');
+  addColumn('trips', 'cancel_distance_m', 'INTEGER');
   addColumn('trips', 'passenger_rating', 'INTEGER');
   addColumn('trips', 'passenger_rating_comment', 'TEXT');
   moveOldWalletRows(db);

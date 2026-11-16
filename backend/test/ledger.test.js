@@ -75,7 +75,7 @@ async function harness() {
     await ping(r);
     return call('POST', `/api/trips/${id}/accept`, {}, r.token);
   };
-  const step = (r, id, what) => call('POST', `/api/trips/${id}/${what}`, {}, r.token);
+  const step = (r, id, what) => call('POST', `/api/trips/${id}/${what}`, what === 'start' ? { pin: db.prepare('SELECT pickup_pin FROM trips WHERE id = ?').get(id).pickup_pin } : {}, r.token);
   const bal = (r) => ({
     free: wallet.creditFree(db, r.id), reserved: wallet.creditReserved(db, r.id), payable: wallet.earningsPayable(db, r.id),
   });
@@ -235,5 +235,72 @@ test('forged confirmations create no credit; manual credit needs a reason and an
   assert.equal(wallet.creditFree(h.db, rider.id), 5000);
   // one rider cannot read another's top-up
   assert.equal((await h.call('GET', `/api/wallet/topup/${r.body.reference}`, undefined, other.token)).status, 404);
+  await h.close();
+});
+
+test('pickup PIN: only the passenger sees it, wrong codes are counted and lock the start', async () => {
+  const h = await harness();
+  const rider = await h.rider();
+  const pax = await h.passenger();
+  const other = await h.passenger();
+  await h.topUp(rider, 10000);
+  const t = (await h.request(pax)).body.trip;
+  const pin = h.db.prepare('SELECT pickup_pin FROM trips WHERE id = ?').get(t.id).pickup_pin;
+  await h.accept(rider, t.id);
+  const riderView = (await h.call('GET', `/api/trips/${t.id}`, undefined, rider.token)).body.trip;
+  assert.equal(riderView.pickupPin, undefined); // the rider must be told it
+  assert.equal((await h.call('GET', `/api/trips/${t.id}`, undefined, other.token)).status, 404);
+  assert.equal((await h.call('GET', '/api/passenger/current', undefined, pax.token)).body.trip.pickupPin, pin);
+  await h.step(rider, t.id, 'arrived');
+  const wrong = pin === '0000' ? '1111' : '0000';
+  for (let i = 0; i < 5; i++) {
+    assert.equal((await h.call('POST', `/api/trips/${t.id}/start`, { pin: wrong }, rider.token)).status, 400);
+  }
+  // locked even for the right code now, so support has to look at it
+  assert.equal((await h.call('POST', `/api/trips/${t.id}/start`, { pin }, rider.token)).status, 429);
+  await h.close();
+});
+
+test('suspicious cancellations are flagged for review but never charged', async () => {
+  const h = await harness();
+  const rider = await h.rider();
+  const pax = await h.passenger();
+  await h.topUp(rider, 10000);
+  for (let i = 0; i < 3; i++) {
+    const t = (await h.request(pax)).body.trip;
+    await h.accept(rider, t.id);
+    await h.call('POST', '/api/captain/location', { lat: 0.355, lng: 32.615 }, rider.token);
+    await h.step(rider, t.id, 'arrived');
+    assert.equal((await h.call('POST', `/api/trips/${t.id}/cancel`, { reason: null }, rider.token)).status, 200);
+  }
+  const flags = (await h.call('GET', '/api/admin/flags', undefined, h.admin)).body.flags;
+  const codes = flags.filter((f) => f.userId === rider.id).map((f) => f.code).sort();
+  assert.deepEqual(codes, ['cancel_near_pickup', 'late_cancels', 'many_cancels']);
+  assert.equal(h.bal(rider).free, 10000); // reservations released; no money penalty
+  assert.equal((await h.call('GET', '/api/admin/flags', undefined, rider.token)).status, 403);
+  await h.close();
+});
+
+test('receipts: passenger sees the fare, rider also sees commission; outsiders see nothing', async () => {
+  const h = await harness();
+  const rider = await h.rider();
+  const pax = await h.passenger();
+  const other = await h.passenger();
+  await h.topUp(rider, 10000);
+  const t = (await h.request(pax)).body.trip;
+  assert.equal((await h.call('GET', `/api/trips/${t.id}/receipt`, undefined, pax.token)).status, 409); // not done yet
+  await h.accept(rider, t.id);
+  for (const w of ['arrived', 'start', 'complete']) await h.step(rider, t.id, w);
+  const p = (await h.call('GET', `/api/trips/${t.id}/receipt`, undefined, pax.token)).body.receipt;
+  assert.equal(p.fare, 5000);
+  assert.equal(p.paymentStatus, 'Cash paid to the rider');
+  assert.equal(p.commission, undefined);
+  assert.match(p.number, /^SB-[0-9A-F]{8}$/);
+  assert.equal(p.pinVerified, true);
+  const r = (await h.call('GET', `/api/trips/${t.id}/receipt`, undefined, rider.token)).body.receipt;
+  assert.equal(r.commission, 500);
+  assert.equal(r.commissionRate, 0.1);
+  assert.equal(r.riderEarnings, 4500);
+  assert.equal((await h.call('GET', `/api/trips/${t.id}/receipt`, undefined, other.token)).status, 404);
   await h.close();
 });

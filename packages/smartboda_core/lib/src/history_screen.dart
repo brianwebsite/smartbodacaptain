@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'api.dart';
 import 'format.dart';
 import 'models.dart';
+import 'receipt_sheet.dart';
 
 /// Past trips for the signed-in user (passenger or captain).
 class HistoryScreen extends StatefulWidget {
@@ -71,8 +72,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       return ListTile(
                         title: Text('${t.pickup.text} → ${t.dropoff.text}',
                             maxLines: 2, overflow: TextOverflow.ellipsis),
-                        subtitle: Text('${shortDate(t.createdAt)} · ${statusLabel(t.status)}'),
+                        subtitle: Text('${shortDate(t.createdAt)} · ${statusLabel(t.status)}${t.status == 'completed' ? ' · tap for receipt' : ''}'),
                         trailing: Text(ugx(amount), style: const TextStyle(fontWeight: FontWeight.w600)),
+                        onTap: t.status == 'completed' ? () => showReceipt(context, widget.api, t.id) : null,
                       );
                     },
                   ),

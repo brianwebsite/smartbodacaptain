@@ -226,7 +226,11 @@ test('a full cash trip from request to rating, with earnings and commission', as
 
   assert.equal((await h.call('POST', `/api/trips/${tripId}/start`, {}, c.token)).status, 409); // must arrive first
   assert.equal((await h.call('POST', `/api/trips/${tripId}/arrived`, {}, c.token)).body.trip.status, 'arrived');
-  assert.equal((await h.call('POST', `/api/trips/${tripId}/start`, {}, c.token)).body.trip.status, 'in_progress');
+  const pin = (await h.call('GET', '/api/passenger/current', undefined, p.token)).body.trip.pickupPin;
+  assert.match(pin, /^\d{4}$/);
+  assert.equal((await h.call('POST', `/api/trips/${tripId}/start`, {}, c.token)).status, 400); // no PIN
+  assert.equal((await h.call('POST', `/api/trips/${tripId}/start`, { pin: pin === '0000' ? '1111' : '0000' }, c.token)).status, 400);
+  assert.equal((await h.call('POST', `/api/trips/${tripId}/start`, { pin }, c.token)).body.trip.status, 'in_progress');
 
   const lateCancel = await h.call('POST', `/api/trips/${tripId}/cancel`, {}, p.token);
   assert.equal(lateCancel.status, 409);

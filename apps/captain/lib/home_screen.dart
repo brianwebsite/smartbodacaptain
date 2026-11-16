@@ -166,6 +166,30 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// The passenger's 4-digit code proves the right person is on board.
+  Future<void> _start(Trip t) async {
+    final ctrl = TextEditingController();
+    final pin = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Trip code'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          maxLength: 4,
+          decoration: const InputDecoration(helperText: 'Ask the passenger for the 4-digit code in their app.'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()), child: const Text('Start')),
+        ],
+      ),
+    );
+    if (pin == null || pin.isEmpty) return;
+    await _act('/api/trips/${t.id}/start', {'pin': pin});
+  }
+
   Future<void> _cancel(Trip t) async {
     final reason = await askCancelReason(context, captain: true);
     if (reason == null) return;
@@ -498,7 +522,11 @@ class _HomeScreenState extends State<HomeScreen> {
         FilledButton(
           onPressed: _busy
               ? null
-              : () => next == 'complete' ? _complete(t) : _act('/api/trips/${t.id}/$next'),
+              : () => next == 'complete'
+                  ? _complete(t)
+                  : next == 'start'
+                      ? _start(t)
+                      : _act('/api/trips/${t.id}/$next'),
           child: Text(buttonText),
         ),
         if (t.status == 'accepted' || t.status == 'arrived')

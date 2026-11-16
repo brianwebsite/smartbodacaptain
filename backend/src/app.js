@@ -24,7 +24,7 @@ import {
 import { nightPercent } from './night.js';
 import * as wallet from './wallet.js';
 import * as ledger from './ledger.js';
-import { captainCancelCounts, passengerCancelCount, captainStanding, passengerStanding } from './behavior.js';
+import { captainCancelCounts, passengerCancelCount, captainStanding, passengerStanding, reviewFlags } from './behavior.js';
 import { haversineKm } from './geo.js';
 import { isVerifiedSuccess, isFailedStatus } from './livepay.js';
 import { VEHICLE_TYPES, VEHICLE_SEATS, CANCEL_REASONS, scaleFareConfig, etaMinutes } from './vehicles.js';
@@ -153,7 +153,12 @@ export function createApp({
       receiverPhone: row.receiver_phone,
       nightPercent: row.night_percent,
       autoStarted: Boolean(row.auto_started),
+      pinVerified: Boolean(row.pin_verified),
     };
+    // Only the passenger sees the code; they tell it to the rider when the rider arrives.
+    if (viewer === 'passenger' && row.pickup_pin && !row.pin_verified && ['accepted', 'arrived'].includes(row.status)) {
+      view.pickupPin = row.pickup_pin;
+    }
     if (viewer === 'passenger' || viewer === 'admin') {
       if (row.captain_id) {
         const u = getUser(row.captain_id);
@@ -651,8 +656,12 @@ export function createApp({
         const mine =
           row && (user.role === 'passenger' ? row.passenger_id === user.id : row.captain_id === user.id);
         if (!mine) throw new HttpError(404, 'Trip not found');
+        const prof = row.captain_id ? getProfile(row.captain_id) : null;
+        const distM = prof && prof.lat != null ? Math.round(haversineKm({ lat: prof.lat, lng: prof.lng }, { lat: row.pickup_lat, lng: row.pickup_lng }) * 1000) : null;
         saveTransition(row, transitionTrip(rowToTrip(row), S.CANCELLED, { by: user.role, actorId: user.id, at: now() }));
-        db.prepare('UPDATE trips SET cancel_reason = ?, cancelled_by = ? WHERE id = ?').run(reason, user.role, row.id);
+        db.prepare('UPDATE trips SET cancel_reason = ?, cancelled_by = ?, cancelled_from = ?, cancel_distance_m = ? WHERE id = ?').run(
+          reason, user.role, row.status, distM, row.id,
+        );
         releaseIfReserved(row);
         return { trip: tripView(getTripRow(row.id), user.role), user: meView(getUser(user.id)) };
       });
@@ -846,13 +855,14 @@ export function createApp({
           `INSERT INTO trips (id, passenger_id, pickup_lat, pickup_lng, pickup_label, dropoff_lat, dropoff_lng,
              dropoff_label, distance_km, duration_min, route_source, fare, commission, captain_earnings,
              payment_method, status, history, created_at, updated_at, vehicle_type,
-             kind, delivery_item, receiver_name, receiver_phone, night_percent)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+             kind, delivery_item, receiver_name, receiver_phone, night_percent, pickup_pin, commission_rate)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         ).run(
           id, user.id, pickup.lat, pickup.lng, pickupLabel, dropoff.lat, dropoff.lng, dropoffLabel,
           q.distanceKm, q.durationMin, q.source, q.fare, q.commission, q.captainEarnings,
           trip.paymentMethod, trip.status, JSON.stringify(trip.history), at, at, vehicleType,
           kind, delivery.item, delivery.receiverName, delivery.receiverPhone, q.nightPercent,
+          String(randomInt(0, 10000)).padStart(4, '0'), getFareConfig(db).commissionRate,
         );
       });
       return { status: 201, body: { trip: tripView(getTripRow(id), 'passenger') } };
@@ -1240,11 +1250,21 @@ export function createApp({
     router.add(
       'POST',
       `/api/trips/:id/${action}`,
-      ({ user, params }) => {
+      ({ user, params, body }) => {
         requireActiveCaptain(user);
-        return transaction(db, () => {
+        const out = transaction(db, () => {
           const row = getTripRow(params.id);
           if (!row || row.captain_id !== user.id) throw new HttpError(404, 'Trip not found');
+          if (status === S.IN_PROGRESS && row.pickup_pin && row.status === S.ARRIVED) {
+            // The passenger's 4-digit code proves the right person is on the vehicle.
+            if (row.pin_attempts >= 5) throw new HttpError(429, 'Too many wrong codes. Ask support to help you start this trip.', 'pin_locked');
+            const given = String((body && body.pin) ?? '').trim();
+            if (given !== row.pickup_pin) {
+              // Counted outside the transaction so the failed attempt is kept.
+              return { wrongPin: row.id };
+            }
+            db.prepare('UPDATE trips SET pin_verified = 1 WHERE id = ?').run(row.id);
+          }
           if (status === S.COMPLETED) {
             completeTrip(row, 'captain', user.id);
           } else {
@@ -1252,6 +1272,11 @@ export function createApp({
           }
           return { trip: tripView(getTripRow(row.id), 'captain') };
         });
+        if (out.wrongPin) {
+          db.prepare('UPDATE trips SET pin_attempts = pin_attempts + 1 WHERE id = ?').run(out.wrongPin);
+          throw new HttpError(400, 'That code is not right. Ask the passenger for the 4-digit code in their app.', 'wrong_pin');
+        }
+        return out;
       },
       { roles: ['captain'] },
     );
@@ -1370,6 +1395,51 @@ export function createApp({
       { roles: ['admin'] },
     );
   }
+
+  // Trips and people worth a human look. Nothing here charges or blocks anyone.
+  router.add('GET', '/api/admin/flags', () => ({ flags: reviewFlags(db, now()) }), { roles: ['admin'] });
+
+  // Receipt for a finished trip. The passenger sees the fare; the rider also sees commission and earnings.
+  router.add(
+    'GET',
+    '/api/trips/:id/receipt',
+    ({ user, params }) => {
+      const row = getTripRow(params.id);
+      const allowed =
+        row && (user.role === 'admin' || row.passenger_id === user.id || row.captain_id === user.id);
+      if (!allowed) throw new HttpError(404, 'Trip not found');
+      if (row.status !== 'completed') throw new HttpError(409, 'A receipt is ready once the trip is complete', 'not_complete');
+      const cap = row.captain_id ? getUser(row.captain_id) : null;
+      const prof = row.captain_id ? getProfile(row.captain_id) : null;
+      const digital = row.payment_method === 'wallet';
+      const receipt = {
+        number: `SB-${row.id.slice(0, 8).toUpperCase()}`,
+        tripId: row.id,
+        date: row.completed_at,
+        kind: row.kind,
+        pickup: row.pickup_label,
+        dropoff: row.dropoff_label,
+        distanceKm: round1(row.distance_km),
+        vehicleType: row.vehicle_type,
+        rider: cap ? { name: cap.name, plate: prof?.bike_plate ?? null } : null,
+        fare: row.fare,
+        nightPercent: row.night_percent,
+        paymentMethod: row.payment_method,
+        paymentStatus: digital ? 'Paid from Smart Boda wallet' : 'Cash paid to the rider',
+        pinVerified: Boolean(row.pin_verified),
+      };
+      if (user.role !== 'passenger') {
+        receipt.commission = row.commission;
+        receipt.commissionRate = row.commission_rate;
+        receipt.riderEarnings = row.captain_earnings;
+        receipt.earningsNote = digital
+          ? 'Paid through the app: this amount is payable to the rider.'
+          : 'Collected in cash by the rider. It does not pass through Smart Boda.';
+      }
+      return { receipt };
+    },
+    { roles: ['passenger', 'captain', 'admin'] },
+  );
 
   router.add(
     'GET',
