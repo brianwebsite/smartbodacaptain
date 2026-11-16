@@ -506,11 +506,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ? '${ugx(t.fare)} paid from the passenger wallet · ${ugx(t.captainEarnings ?? t.fare)} goes to your wallet · ${t.distanceKm} km'
               : '${ugx(t.fare)} cash · you keep ${ugx(t.captainEarnings ?? t.fare)} · ${t.distanceKm} km',
         ),
-        const SizedBox(height: 4),
-        const Text(
-          'Your phone also starts and finishes the trip by itself when you reach the pickup, drive off, and reach the drop-off.',
-          style: TextStyle(fontSize: 12, color: Colors.black54),
-        ),
         if (_error != null)
           Padding(
             padding: const EdgeInsets.only(top: 8),
