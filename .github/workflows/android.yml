@@ -77,7 +77,7 @@ jobs:
         # Gradle sometimes fails to download Kotlin plugins from plugins.gradle.org. Trying again works.
         run: |
           # Push notifications turn on when apps/<app>/google-services.json is present.
-          FIREBASE_DEFINES=$(python3 ../../scripts/firebase_defines.py google-services.json)
+          FIREBASE_DEFINES=$(python3 ../../scripts/firebase_defines.py google-services.json ug.smartboda.${{ matrix.app }})
           for attempt in 1 2 3; do
             flutter build apk --release --dart-define=API_BASE_URL="$API_BASE_URL" $FIREBASE_DEFINES && exit 0
             echo "Build attempt $attempt failed, trying again"; sleep 10
