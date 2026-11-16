@@ -28,6 +28,16 @@ CREATE TABLE IF NOT EXISTS captain_profiles (
   location_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS trip_messages (
+  id TEXT PRIMARY KEY,
+  trip_id TEXT NOT NULL REFERENCES trips(id),
+  sender_id TEXT NOT NULL REFERENCES users(id),
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  read_at TEXT
+);
+CREATE INDEX IF NOT EXISTS trip_messages_trip ON trip_messages(trip_id);
+
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
@@ -100,6 +110,14 @@ function migrate(db) {
   const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
   if (!cols.includes('email')) db.exec('ALTER TABLE users ADD COLUMN email TEXT');
   if (!cols.includes('google_sub')) db.exec('ALTER TABLE users ADD COLUMN google_sub TEXT');
+  const addColumn = (table, column, ddl) => {
+    const have = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!have.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  };
+  addColumn('captain_profiles', 'vehicle_type', "TEXT NOT NULL DEFAULT 'boda'");
+  addColumn('trips', 'vehicle_type', "TEXT NOT NULL DEFAULT 'boda'");
+  addColumn('trips', 'cancel_reason', 'TEXT');
+  addColumn('trips', 'cancelled_by', 'TEXT');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email) WHERE email IS NOT NULL');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_google_unique ON users(google_sub) WHERE google_sub IS NOT NULL');
 }

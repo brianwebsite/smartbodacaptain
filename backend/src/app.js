@@ -2,7 +2,7 @@
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 
 import { calculateFare } from './fare.js';
 import { rankCaptains } from './dispatch.js';
@@ -18,7 +18,8 @@ import {
   RateLimiter,
 } from './auth.js';
 import { Router, readJson, sendJson } from './http.js';
-import { getFareConfig, getDispatchConfig, updateSettings } from './settings.js';
+import { getFareConfig, getDispatchConfig, getVehicleConfig, updateSettings } from './settings.js';
+import { VEHICLE_TYPES, CANCEL_REASONS, scaleFareConfig, etaMinutes } from './vehicles.js';
 import { HttpError, bad, obj, text, oneOf, bool, num, int, point } from './validate.js';
 
 const ACTIVE_STATUSES = [S.REQUESTED, S.ACCEPTED, S.ARRIVED, S.IN_PROGRESS];
@@ -36,11 +37,14 @@ export function createApp({
   adminHtmlPath = null,
   googleVerify = null,
   googleClientId = null,
+  places = null,
 }) {
   const router = new Router();
   const loginByPhone = new RateLimiter(10, 15 * 60 * 1000);
   const loginByIp = new RateLimiter(40, 15 * 60 * 1000);
   const registerByIp = new RateLimiter(20, 60 * 60 * 1000);
+  const placesByUser = new RateLimiter(60, 60 * 1000);
+  const messagesByUser = new RateLimiter(40, 60 * 1000);
 
   // ---------- database helpers ----------
 
@@ -89,6 +93,27 @@ export function createApp({
       .get(userId, ...WITH_CAPTAIN_STATUSES);
   }
 
+  function captainStats(captainId) {
+    const r = db
+      .prepare(
+        `SELECT COUNT(CASE WHEN status = 'completed' THEN 1 END) AS trips,
+                AVG(rating) AS avg, COUNT(rating) AS rated
+         FROM trips WHERE captain_id = ?`,
+      )
+      .get(captainId);
+    return {
+      completedTrips: r.trips,
+      rating: r.avg == null ? null : round1(r.avg),
+      ratingCount: r.rated,
+    };
+  }
+
+  function unreadFor(tripId, userId) {
+    return db
+      .prepare('SELECT COUNT(*) AS c FROM trip_messages WHERE trip_id = ? AND sender_id <> ? AND read_at IS NULL')
+      .get(tripId, userId).c;
+  }
+
   function tripView(row, viewer) {
     const view = {
       id: row.id,
@@ -100,6 +125,9 @@ export function createApp({
       routeSource: row.route_source,
       fare: row.fare,
       paymentMethod: row.payment_method,
+      vehicleType: row.vehicle_type,
+      cancelReason: row.cancel_reason,
+      cancelledBy: row.cancelled_by,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       completedAt: row.completed_at,
@@ -109,12 +137,19 @@ export function createApp({
       if (row.captain_id) {
         const u = getUser(row.captain_id);
         const p = getProfile(row.captain_id);
+        const stats = captainStats(u.id);
         view.captain = {
           id: u.id,
           name: u.name,
           phone: u.phone,
           bikePlate: p.bike_plate,
           bikeModel: p.bike_model,
+          vehicleType: p.vehicle_type,
+          stageName: p.stage_name,
+          rating: stats.rating,
+          ratingCount: stats.ratingCount,
+          completedTrips: stats.completedTrips,
+          memberSince: u.created_at,
           location: p.lat == null ? null : { lat: p.lat, lng: p.lng },
           locationAt: p.location_at,
         };
@@ -153,7 +188,7 @@ export function createApp({
   function candidateCaptains() {
     return db
       .prepare(
-        `SELECT u.id, p.lat, p.lng, p.location_at,
+        `SELECT u.id, p.lat, p.lng, p.location_at, p.vehicle_type,
            EXISTS (SELECT 1 FROM trips t WHERE t.captain_id = u.id
                    AND t.status IN (${placeholders(WITH_CAPTAIN_STATUSES)})) AS on_trip
          FROM captain_profiles p JOIN users u ON u.id = p.user_id
@@ -165,6 +200,7 @@ export function createApp({
         approved: true,
         online: true,
         onTrip: Boolean(c.on_trip),
+        vehicleType: c.vehicle_type,
         location: { lat: c.lat, lng: c.lng },
         locationAt: c.location_at,
       }));
@@ -175,7 +211,7 @@ export function createApp({
     const declined = db.prepare('SELECT captain_id FROM declines WHERE trip_id = ?').all(row.id);
     return rankCaptains({
       pickup: { lat: row.pickup_lat, lng: row.pickup_lng },
-      captains,
+      captains: captains.filter((c) => c.vehicleType === row.vehicle_type),
       now: now(),
       maxKm: cfg.maxKm,
       limit: cfg.limit,
@@ -186,20 +222,69 @@ export function createApp({
 
   // ---------- fares ----------
 
-  async function quote(pickup, dropoff) {
+  async function routeFor(pickup, dropoff) {
     const route = await routing.route(pickup, dropoff);
     if (route.distanceKm < MIN_TRIP_KM) throw bad('Pickup and drop-off are too close together');
     if (route.distanceKm > MAX_TRIP_KM) throw bad('That trip is too far for Smart Boda');
-    const calc = calculateFare(
+    return route;
+  }
+
+  function priceFor(route, vehicleType) {
+    const multiplier = getVehicleConfig(db)[vehicleType]?.multiplier ?? 1;
+    return calculateFare(
       { distanceKm: route.distanceKm, durationMin: route.durationMin },
-      getFareConfig(db),
+      scaleFareConfig(getFareConfig(db), multiplier),
     );
+  }
+
+  async function quote(pickup, dropoff, vehicleType = 'boda') {
+    const route = await routeFor(pickup, dropoff);
     return {
       distanceKm: route.distanceKm,
       durationMin: route.durationMin,
       source: route.source,
-      ...calc,
+      ...priceFor(route, vehicleType),
     };
+  }
+
+  // ---------- who is near a point ----------
+
+  const NEARBY_KM = 5;
+  const round4 = (n) => Math.round(n * 1e4) / 1e4;
+  const publicId = (id) => createHash('sha256').update(id).digest('hex').slice(0, 8);
+
+  /** Free captains near a point, with an "about N minutes" arrival estimate. No names. */
+  function nearbyCaptains(at) {
+    const cfg = getDispatchConfig(db);
+    const all = candidateCaptains();
+    const byId = new Map(all.map((c) => [c.id, c]));
+    return rankCaptains({
+      pickup: at,
+      captains: all,
+      now: now(),
+      maxKm: NEARBY_KM,
+      limit: 60,
+      staleAfterSeconds: cfg.staleAfterSeconds,
+    }).map((r) => {
+      const c = byId.get(r.id);
+      return {
+        id: publicId(r.id),
+        vehicleType: c.vehicleType,
+        lat: round4(c.location.lat),
+        lng: round4(c.location.lng),
+        distanceKm: round1(r.distanceKm),
+        etaMin: etaMinutes(r.distanceKm),
+      };
+    });
+  }
+
+  function nearbySummary(drivers) {
+    const out = {};
+    for (const t of VEHICLE_TYPES) {
+      const mine = drivers.filter((d) => d.vehicleType === t);
+      out[t] = { count: mine.length, etaMin: mine.length ? Math.min(...mine.map((d) => d.etaMin)) : null };
+    }
+    return out;
   }
 
   // ---------- routes: public ----------
@@ -233,6 +318,7 @@ export function createApp({
       nationalId: text(body.nationalId, 'National ID number', { min: 8, max: 20 }).toUpperCase(),
       permitNumber: text(body.permitNumber, 'Driving permit number', { min: 4, max: 30 }).toUpperCase(),
       stageName: text(body.stageName, 'Stage name', { max: 60, optional: true }),
+      vehicleType: body.vehicleType === undefined ? 'boda' : oneOf(body.vehicleType, 'vehicleType', VEHICLE_TYPES),
     };
   }
 
@@ -249,9 +335,12 @@ export function createApp({
         ).run(id, role, name, phone, email, googleSub, passwordHash, role === 'captain' ? 'pending' : 'active', at);
         if (profile) {
           db.prepare(
-            `INSERT INTO captain_profiles (user_id, bike_plate, bike_model, national_id, permit_number, stage_name)
-             VALUES (?,?,?,?,?,?)`,
-          ).run(id, profile.bikePlate, profile.bikeModel, profile.nationalId, profile.permitNumber, profile.stageName);
+            `INSERT INTO captain_profiles (user_id, bike_plate, bike_model, national_id, permit_number, stage_name, vehicle_type)
+             VALUES (?,?,?,?,?,?,?)`,
+          ).run(
+            id, profile.bikePlate, profile.bikeModel, profile.nationalId, profile.permitNumber,
+            profile.stageName, profile.vehicleType,
+          );
         }
         db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?,?,?,?)').run(
           tokenHash, id, at, sessionExpiry(at),
@@ -386,6 +475,7 @@ export function createApp({
         bikePlate: p.bike_plate,
         bikeModel: p.bike_model,
         stageName: p.stage_name,
+        vehicleType: p.vehicle_type,
         online: Boolean(p.online),
       };
     }
@@ -437,31 +527,154 @@ export function createApp({
   router.add(
     'POST',
     '/api/trips/:id/cancel',
-    ({ user, params }) =>
-      transaction(db, () => {
+    ({ user, params, body }) => {
+      const b = body && typeof body === 'object' ? body : {};
+      const reason =
+        b.reason == null ? null : oneOf(b.reason, 'reason', CANCEL_REASONS[user.role].map((r) => r.id));
+      return transaction(db, () => {
         const row = getTripRow(params.id);
         const mine =
           row && (user.role === 'passenger' ? row.passenger_id === user.id : row.captain_id === user.id);
         if (!mine) throw new HttpError(404, 'Trip not found');
         saveTransition(row, transitionTrip(rowToTrip(row), S.CANCELLED, { by: user.role, actorId: user.id, at: now() }));
+        db.prepare('UPDATE trips SET cancel_reason = ?, cancelled_by = ? WHERE id = ?').run(reason, user.role, row.id);
         return { trip: tripView(getTripRow(row.id), user.role) };
-      }),
+      });
+    },
+    { roles: ['passenger', 'captain'] },
+  );
+
+  // ---------- routes: messages between the two people on a trip ----------
+
+  function tripForChat(user, id) {
+    const row = getTripRow(id);
+    const isMember = row && (row.passenger_id === user.id || row.captain_id === user.id);
+    if (!isMember || !row.captain_id) throw new HttpError(404, 'Trip not found');
+    return row;
+  }
+
+  router.add(
+    'GET',
+    '/api/trips/:id/messages',
+    ({ user, params }) => {
+      const row = tripForChat(user, params.id);
+      const rows = db
+        .prepare('SELECT id, sender_id, body, created_at FROM trip_messages WHERE trip_id = ? ORDER BY rowid LIMIT 200')
+        .all(row.id);
+      db.prepare(
+        'UPDATE trip_messages SET read_at = ? WHERE trip_id = ? AND sender_id <> ? AND read_at IS NULL',
+      ).run(now(), row.id, user.id);
+      return {
+        messages: rows.map((m) => ({
+          id: m.id,
+          mine: m.sender_id === user.id,
+          body: m.body,
+          createdAt: m.created_at,
+        })),
+      };
+    },
+    { roles: ['passenger', 'captain'] },
+  );
+
+  router.add(
+    'POST',
+    '/api/trips/:id/messages',
+    ({ user, params, body }) => {
+      obj(body);
+      const row = tripForChat(user, params.id);
+      if (!WITH_CAPTAIN_STATUSES.includes(row.status)) {
+        throw new HttpError(409, 'Messages are only open while the trip is active', 'chat_closed');
+      }
+      if (!messagesByUser.allow(user.id, Date.parse(now()))) {
+        throw new HttpError(429, 'You are sending messages too fast. Wait a moment.', 'rate_limited');
+      }
+      const message = text(body.body, 'Message', { min: 1, max: 500 });
+      const id = randomUUID();
+      const at = now();
+      db.prepare('INSERT INTO trip_messages (id, trip_id, sender_id, body, created_at) VALUES (?,?,?,?,?)').run(
+        id, row.id, user.id, message, at,
+      );
+      return { status: 201, body: { message: { id, mine: true, body: message, createdAt: at } } };
+    },
+    { roles: ['passenger', 'captain'] },
+  );
+
+  // ---------- routes: place search ----------
+
+  router.add(
+    'GET',
+    '/api/places/search',
+    async ({ user, query }) => {
+      if (!places) throw new HttpError(503, 'Place search is not set up', 'places_unavailable');
+      if (!placesByUser.allow(user.id, Date.parse(now()))) {
+        throw new HttpError(429, 'Searching too fast. Wait a moment.', 'rate_limited');
+      }
+      const q = String(query.q ?? '');
+      let near = null;
+      if (query.lat !== undefined && query.lng !== undefined) {
+        near = point({ lat: Number(query.lat), lng: Number(query.lng) }, 'near');
+      }
+      try {
+        return { places: await places.search(q, near) };
+      } catch {
+        throw new HttpError(503, 'Place search is busy. Try again in a moment.', 'places_failed');
+      }
+    },
+    { roles: ['passenger', 'captain'] },
+  );
+
+  router.add(
+    'GET',
+    '/api/places/reverse',
+    async ({ user, query }) => {
+      if (!places) throw new HttpError(503, 'Place search is not set up', 'places_unavailable');
+      if (!placesByUser.allow(user.id, Date.parse(now()))) {
+        throw new HttpError(429, 'Searching too fast. Wait a moment.', 'rate_limited');
+      }
+      const at = point({ lat: Number(query.lat), lng: Number(query.lng) }, 'location');
+      try {
+        return { place: await places.reverse(at.lat, at.lng) };
+      } catch {
+        throw new HttpError(503, 'Place search is busy. Try again in a moment.', 'places_failed');
+      }
+    },
     { roles: ['passenger', 'captain'] },
   );
 
   // ---------- routes: passenger ----------
 
   router.add(
+    'GET',
+    '/api/passenger/nearby',
+    ({ query }) => {
+      const at = point({ lat: Number(query.lat), lng: Number(query.lng) }, 'location');
+      const drivers = nearbyCaptains(at);
+      return { drivers, summary: nearbySummary(drivers) };
+    },
+    { roles: ['passenger'] },
+  );
+
+
+  router.add(
     'POST',
     '/api/fare/estimate',
     async ({ body }) => {
       obj(body);
-      const q = await quote(point(body.pickup, 'pickup'), point(body.dropoff, 'dropoff'));
+      const pickup = point(body.pickup, 'pickup');
+      const route = await routeFor(pickup, point(body.dropoff, 'dropoff'));
+      const near = nearbySummary(nearbyCaptains(pickup));
+      const options = VEHICLE_TYPES.map((t) => ({
+        vehicleType: t,
+        fare: priceFor(route, t).fare,
+        nearbyCount: near[t].count,
+        etaMin: near[t].etaMin,
+      }));
       return {
-        distanceKm: round1(q.distanceKm),
-        durationMin: Math.round(q.durationMin),
-        fare: q.fare,
-        source: q.source,
+        distanceKm: round1(route.distanceKm),
+        durationMin: Math.round(route.durationMin),
+        fare: options[0].fare,
+        options,
+        source: route.source,
         paymentMethods: ['cash'],
       };
     },
@@ -481,7 +694,8 @@ export function createApp({
       }
       const pickupLabel = text(body.pickupLabel, 'pickupLabel', { max: 120, optional: true });
       const dropoffLabel = text(body.dropoffLabel, 'dropoffLabel', { max: 120, optional: true });
-      const q = await quote(pickup, dropoff);
+      const vehicleType = body.vehicleType === undefined ? 'boda' : oneOf(body.vehicleType, 'vehicleType', VEHICLE_TYPES);
+      const q = await quote(pickup, dropoff, vehicleType);
       const id = randomUUID();
       const at = now();
       const trip = createTrip({ id, passengerId: user.id, pickup, dropoff, fare: q.fare, paymentMethod: 'cash', at });
@@ -492,12 +706,12 @@ export function createApp({
         db.prepare(
           `INSERT INTO trips (id, passenger_id, pickup_lat, pickup_lng, pickup_label, dropoff_lat, dropoff_lng,
              dropoff_label, distance_km, duration_min, route_source, fare, commission, captain_earnings,
-             payment_method, status, history, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+             payment_method, status, history, created_at, updated_at, vehicle_type)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         ).run(
           id, user.id, pickup.lat, pickup.lng, pickupLabel, dropoff.lat, dropoff.lng, dropoffLabel,
           q.distanceKm, q.durationMin, q.source, q.fare, q.commission, q.captainEarnings,
-          trip.paymentMethod, trip.status, JSON.stringify(trip.history), at, at,
+          trip.paymentMethod, trip.status, JSON.stringify(trip.history), at, at, vehicleType,
         );
       });
       return { status: 201, body: { trip: tripView(getTripRow(id), 'passenger') } };
@@ -519,7 +733,7 @@ export function createApp({
         )
         .get(user.id, since);
       return {
-        trip: active ? tripView(active, 'passenger') : null,
+        trip: active ? { ...tripView(active, 'passenger'), unread: unreadFor(active.id, user.id) } : null,
         unrated: unrated ? tripView(unrated, 'passenger') : null,
       };
     },
@@ -622,7 +836,7 @@ export function createApp({
     ({ user }) => {
       requireActiveCaptain(user);
       const row = activeTripForCaptain(user.id);
-      return { trip: row ? tripView(row, 'captain') : null };
+      return { trip: row ? { ...tripView(row, 'captain'), unread: unreadFor(row.id, user.id) } : null };
     },
     { roles: ['captain'] },
   );
@@ -745,7 +959,7 @@ export function createApp({
       const rows = db
         .prepare(
           `SELECT u.id, u.name, u.phone, u.status, u.created_at, p.bike_plate, p.bike_model, p.national_id,
-             p.permit_number, p.stage_name, p.online,
+             p.permit_number, p.stage_name, p.online, p.vehicle_type,
              (SELECT COUNT(*) FROM trips t WHERE t.captain_id = u.id AND t.status = 'completed') AS trips,
              (SELECT AVG(rating) FROM trips t WHERE t.captain_id = u.id AND t.rating IS NOT NULL) AS avg_rating
            FROM users u JOIN captain_profiles p ON p.user_id = u.id
@@ -765,6 +979,7 @@ export function createApp({
           nationalId: r.national_id,
           permitNumber: r.permit_number,
           stageName: r.stage_name,
+          vehicleType: r.vehicle_type,
           online: Boolean(r.online),
           trips: r.trips,
           avgRating: r.avg_rating == null ? null : round1(r.avg_rating),
@@ -830,7 +1045,7 @@ export function createApp({
       expireStaleTrips();
       const captains = db
         .prepare(
-          `SELECT u.id, u.name, p.bike_plate, p.lat, p.lng, p.location_at,
+          `SELECT u.id, u.name, p.bike_plate, p.vehicle_type, p.lat, p.lng, p.location_at,
              EXISTS (SELECT 1 FROM trips t WHERE t.captain_id = u.id
                      AND t.status IN (${placeholders(WITH_CAPTAIN_STATUSES)})) AS on_trip
            FROM captain_profiles p JOIN users u ON u.id = p.user_id
@@ -838,7 +1053,7 @@ export function createApp({
         )
         .all(...WITH_CAPTAIN_STATUSES)
         .map((c) => ({
-          id: c.id, name: c.name, bikePlate: c.bike_plate, lat: c.lat, lng: c.lng,
+          id: c.id, name: c.name, bikePlate: c.bike_plate, vehicleType: c.vehicle_type, lat: c.lat, lng: c.lng,
           locationAt: c.location_at, onTrip: Boolean(c.on_trip),
         }));
       const trips = db
@@ -874,7 +1089,7 @@ export function createApp({
     { roles: ['admin'] },
   );
 
-  router.add('GET', '/api/admin/settings', () => ({ fare: getFareConfig(db), dispatch: getDispatchConfig(db) }), {
+  router.add('GET', '/api/admin/settings', () => ({ fare: getFareConfig(db), dispatch: getDispatchConfig(db), vehicles: getVehicleConfig(db) }), {
     roles: ['admin'],
   });
   router.add('PUT', '/api/admin/settings', ({ body }) => updateSettings(db, body), { roles: ['admin'] });

@@ -6,6 +6,7 @@
 //   ADMIN_PHONE, ADMIN_PASSWORD, ADMIN_NAME
 //                        creates the first admin account if no admin exists yet
 //   GOOGLE_CLIENT_ID     optional. The "Web" OAuth client ID; turns on Google sign-in for passengers.
+//   PHOTON_URL           optional. Your own Photon place-search server (default: the free public one).
 //   TRUST_PROXY          set to 1 when behind Caddy or another proxy
 
 import { mkdirSync } from 'node:fs';
@@ -18,6 +19,7 @@ import { chooseRouting } from './routing.js';
 import { hashPassword } from './auth.js';
 import { normalizeUgPhone } from './phone.js';
 import { googleVerifier } from './google.js';
+import { photonPlaces } from './places.js';
 
 const port = Number.parseInt(process.env.PORT ?? '8080', 10);
 const dbPath = process.env.DB_PATH ?? './data/smartboda.db';
@@ -52,6 +54,7 @@ const { server } = createApp({
   db,
   routing,
   googleClientId,
+  places: photonPlaces({ baseUrl: process.env.PHOTON_URL || undefined }),
   googleVerify: googleClientId ? googleVerifier([googleClientId]) : null,
   trustProxy: process.env.TRUST_PROXY === '1',
   adminHtmlPath: new URL('../../admin/index.html', import.meta.url),

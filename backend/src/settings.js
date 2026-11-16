@@ -2,6 +2,7 @@
 
 import { DEFAULT_FARE_CONFIG, calculateFare } from './fare.js';
 import { bad, obj, num, int } from './validate.js';
+import { DEFAULT_VEHICLES, VEHICLE_TYPES } from './vehicles.js';
 
 export const DEFAULT_DISPATCH = Object.freeze({
   maxKm: 3, // how far from the pickup a captain may be and still get the offer
@@ -17,6 +18,7 @@ function read(db, key, defaults) {
 
 export const getFareConfig = (db) => read(db, 'fare', DEFAULT_FARE_CONFIG);
 export const getDispatchConfig = (db) => read(db, 'dispatch', DEFAULT_DISPATCH);
+export const getVehicleConfig = (db) => read(db, 'vehicles', DEFAULT_VEHICLES);
 
 function write(db, key, value) {
   db.prepare(
@@ -57,5 +59,15 @@ export function updateSettings(db, body) {
     }
     write(db, 'dispatch', next);
   }
-  return { fare: getFareConfig(db), dispatch: getDispatchConfig(db) };
+  if (body.vehicles !== undefined) {
+    const v = obj(body.vehicles, 'vehicles');
+    const next = { ...getVehicleConfig(db) };
+    for (const type of VEHICLE_TYPES) {
+      if (v[type] === undefined) continue;
+      const m = num(obj(v[type], type).multiplier, `${type}.multiplier`, { min: 0.5, max: 5 });
+      next[type] = { multiplier: m };
+    }
+    write(db, 'vehicles', next);
+  }
+  return { fare: getFareConfig(db), dispatch: getDispatchConfig(db), vehicles: getVehicleConfig(db) };
 }
