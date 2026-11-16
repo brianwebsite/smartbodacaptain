@@ -1,0 +1,10 @@
+FROM node:22-slim
+WORKDIR /app
+COPY backend/ ./backend/
+COPY admin/ ./admin/
+WORKDIR /app/backend
+ENV PORT=8080 DB_PATH=/data/smartboda.db NODE_ENV=production
+VOLUME /data
+EXPOSE 8080
+USER node
+CMD ["node", "src/server.js"]
