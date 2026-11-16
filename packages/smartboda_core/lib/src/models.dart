@@ -23,8 +23,10 @@ class AppUser {
     required this.name,
     required this.phone,
     required this.status,
+    this.email,
     this.bikePlate,
     this.bikeModel,
+    this.vehicleType = 'boda',
     this.online = false,
   });
 
@@ -32,9 +34,11 @@ class AppUser {
   final String role;
   final String name;
   final String phone;
+  final String? email;
   final String status;
   final String? bikePlate;
   final String? bikeModel;
+  final String vehicleType;
   final bool online;
 
   factory AppUser.fromJson(Map<String, dynamic> j) {
@@ -44,9 +48,11 @@ class AppUser {
       role: j['role'] as String,
       name: j['name'] as String,
       phone: j['phone'] as String,
+      email: j['email'] as String?,
       status: j['status'] as String,
       bikePlate: cap?['bikePlate'] as String?,
       bikeModel: cap?['bikeModel'] as String?,
+      vehicleType: (cap?['vehicleType'] as String?) ?? 'boda',
       online: (cap?['online'] as bool?) ?? false,
     );
   }
@@ -59,6 +65,12 @@ class CaptainInfo {
     required this.phone,
     required this.bikePlate,
     this.bikeModel,
+    this.vehicleType = 'boda',
+    this.stageName,
+    this.rating,
+    this.ratingCount = 0,
+    this.completedTrips = 0,
+    this.memberSince,
     this.lat,
     this.lng,
   });
@@ -68,17 +80,30 @@ class CaptainInfo {
   final String phone;
   final String bikePlate;
   final String? bikeModel;
+  final String vehicleType;
+  final String? stageName;
+  final double? rating;
+  final int ratingCount;
+  final int completedTrips;
+  final DateTime? memberSince;
   final double? lat;
   final double? lng;
 
   factory CaptainInfo.fromJson(Map<String, dynamic> j) {
     final loc = j['location'] as Map<String, dynamic>?;
+    final since = j['memberSince'] as String?;
     return CaptainInfo(
       id: j['id'] as String,
       name: j['name'] as String,
       phone: j['phone'] as String,
       bikePlate: j['bikePlate'] as String,
       bikeModel: j['bikeModel'] as String?,
+      vehicleType: (j['vehicleType'] as String?) ?? 'boda',
+      stageName: j['stageName'] as String?,
+      rating: (j['rating'] as num?)?.toDouble(),
+      ratingCount: (j['ratingCount'] as num?)?.toInt() ?? 0,
+      completedTrips: (j['completedTrips'] as num?)?.toInt() ?? 0,
+      memberSince: since == null ? null : DateTime.tryParse(since),
       lat: (loc?['lat'] as num?)?.toDouble(),
       lng: (loc?['lng'] as num?)?.toDouble(),
     );
@@ -107,6 +132,10 @@ class Trip {
     required this.routeSource,
     required this.paymentMethod,
     required this.createdAt,
+    this.vehicleType = 'boda',
+    this.cancelReason,
+    this.cancelledBy,
+    this.unread = 0,
     this.captain,
     this.passenger,
     this.commission,
@@ -124,6 +153,10 @@ class Trip {
   final String routeSource;
   final String paymentMethod;
   final DateTime createdAt;
+  final String vehicleType;
+  final String? cancelReason;
+  final String? cancelledBy;
+  final int unread;
   final CaptainInfo? captain;
   final PassengerInfo? passenger;
   final int? commission;
@@ -143,6 +176,10 @@ class Trip {
         routeSource: j['routeSource'] as String,
         paymentMethod: j['paymentMethod'] as String,
         createdAt: DateTime.parse(j['createdAt'] as String),
+        vehicleType: (j['vehicleType'] as String?) ?? 'boda',
+        cancelReason: j['cancelReason'] as String?,
+        cancelledBy: j['cancelledBy'] as String?,
+        unread: (j['unread'] as num?)?.toInt() ?? 0,
         captain: j['captain'] == null
             ? null
             : CaptainInfo.fromJson(j['captain'] as Map<String, dynamic>),
@@ -155,26 +192,114 @@ class Trip {
       );
 }
 
+class FareOption {
+  const FareOption({required this.vehicleType, required this.fare, required this.nearbyCount, this.etaMin});
+
+  final String vehicleType;
+  final int fare;
+  final int nearbyCount;
+
+  /// Minutes until the nearest free captain of this type could arrive, if any.
+  final int? etaMin;
+
+  factory FareOption.fromJson(Map<String, dynamic> j) => FareOption(
+        vehicleType: j['vehicleType'] as String,
+        fare: (j['fare'] as num).toInt(),
+        nearbyCount: (j['nearbyCount'] as num).toInt(),
+        etaMin: (j['etaMin'] as num?)?.toInt(),
+      );
+}
+
 class FareEstimate {
   const FareEstimate({
     required this.distanceKm,
     required this.durationMin,
-    required this.fare,
     required this.source,
+    required this.options,
   });
 
   final double distanceKm;
   final int durationMin;
-  final int fare;
   final String source;
+  final List<FareOption> options;
 
   bool get isEstimate => source == 'estimate';
+
+  FareOption? option(String vehicleType) {
+    for (final o in options) {
+      if (o.vehicleType == vehicleType) return o;
+    }
+    return null;
+  }
 
   factory FareEstimate.fromJson(Map<String, dynamic> j) => FareEstimate(
         distanceKm: (j['distanceKm'] as num).toDouble(),
         durationMin: (j['durationMin'] as num).toInt(),
-        fare: (j['fare'] as num).toInt(),
         source: j['source'] as String,
+        options: (j['options'] as List<dynamic>)
+            .map((o) => FareOption.fromJson(o as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
+class NearbyDriver {
+  const NearbyDriver({
+    required this.id,
+    required this.vehicleType,
+    required this.lat,
+    required this.lng,
+    required this.etaMin,
+  });
+
+  final String id;
+  final String vehicleType;
+  final double lat;
+  final double lng;
+  final int etaMin;
+
+  factory NearbyDriver.fromJson(Map<String, dynamic> j) => NearbyDriver(
+        id: j['id'] as String,
+        vehicleType: j['vehicleType'] as String,
+        lat: (j['lat'] as num).toDouble(),
+        lng: (j['lng'] as num).toDouble(),
+        etaMin: (j['etaMin'] as num).toInt(),
+      );
+}
+
+/// A search result for a destination.
+class PlaceSuggestion {
+  const PlaceSuggestion({required this.label, required this.title, required this.subtitle, required this.lat, required this.lng});
+
+  final String label;
+  final String title;
+  final String subtitle;
+  final double lat;
+  final double lng;
+
+  Place toPlace() => Place(lat: lat, lng: lng, label: label);
+
+  factory PlaceSuggestion.fromJson(Map<String, dynamic> j) => PlaceSuggestion(
+        label: j['label'] as String,
+        title: j['title'] as String,
+        subtitle: (j['subtitle'] as String?) ?? '',
+        lat: (j['lat'] as num).toDouble(),
+        lng: (j['lng'] as num).toDouble(),
+      );
+}
+
+class ChatMessage {
+  const ChatMessage({required this.id, required this.mine, required this.body, required this.createdAt});
+
+  final String id;
+  final bool mine;
+  final String body;
+  final DateTime createdAt;
+
+  factory ChatMessage.fromJson(Map<String, dynamic> j) => ChatMessage(
+        id: j['id'] as String,
+        mine: j['mine'] as bool,
+        body: j['body'] as String,
+        createdAt: DateTime.parse(j['createdAt'] as String),
       );
 }
 

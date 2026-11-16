@@ -131,13 +131,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _act(String path) async {
+  Future<void> _act(String path, [Map<String, dynamic>? body]) async {
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      final r = await _api.post(path);
+      final r = await _api.post(path, body);
       if (mounted && r['trip'] != null) {
         setState(() => _trip = Trip.fromJson(r['trip'] as Map<String, dynamic>));
       }
@@ -149,6 +149,25 @@ class _HomeScreenState extends State<HomeScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _cancel(Trip t) async {
+    final reason = await askCancelReason(context, captain: true);
+    if (reason == null) return;
+    await _act('/api/trips/${t.id}/cancel', {'reason': reason});
+  }
+
+  void _openChat(Trip t) {
+    final p = t.passenger;
+    if (p == null) return;
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => ChatScreen(
+        api: _api,
+        tripId: t.id,
+        title: p.name,
+        quickReplies: const ["I'm on my way", "I'm at the pickup", 'Where exactly are you?', 'Please come out'],
+      ),
+    ));
   }
 
   Future<void> _complete(Trip t) async {
@@ -167,7 +186,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<Marker> _markers() {
     final out = <Marker>[];
-    if (_here != null) out.add(dotMarker(_here!));
+    if (_here != null) out.add(vehicleMarker(_here!, _user.vehicleType, big: true));
     final t = _trip;
     if (t != null) {
       out.add(pinMarker(LatLng(t.pickup.lat, t.pickup.lng), color: Colors.green));
@@ -201,7 +220,7 @@ class _HomeScreenState extends State<HomeScreen> {
             itemBuilder: (_) => [
               PopupMenuItem(
                   enabled: false,
-                  child: Text('${_user.name}\n${_user.bikePlate ?? ''}')),
+                  child: Text('${_user.name}\n${vehicleById(_user.vehicleType).label} · ${_user.bikePlate ?? ''}')),
               const PopupMenuItem(value: 'earnings', child: Text('Earnings')),
               const PopupMenuItem(value: 'history', child: Text('Trip history')),
               const PopupMenuItem(value: 'logout', child: Text('Sign out')),
@@ -312,8 +331,64 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         Text(label, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
         const SizedBox(height: 4),
-        Text('${t.passenger?.name ?? ''} · ${t.passenger?.phone ?? ''}'),
-        Text('${ugx(t.fare)} cash · you keep ${ugx(t.captainEarnings ?? t.fare)}'),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(border: Border.all(color: Colors.black12), borderRadius: BorderRadius.circular(14)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: bodaGreen,
+                    child: Text(
+                      (t.passenger?.name ?? '?').trim().isEmpty ? '?' : t.passenger!.name.trim()[0].toUpperCase(),
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(t.passenger?.name ?? 'Passenger', style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+                        Text(t.status == 'in_progress' ? 'To: ${t.dropoff.text}' : 'Pickup: ${t.pickup.text}',
+                            maxLines: 2, overflow: TextOverflow.ellipsis),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: t.passenger == null ? null : () => callPhone(context, t.passenger!.phone),
+                      icon: const Icon(Icons.call),
+                      label: const Text('Call'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => _openChat(t),
+                      icon: Badge(
+                        label: Text('${t.unread}'),
+                        isLabelVisible: t.unread > 0,
+                        child: const Icon(Icons.chat_bubble_outline),
+                      ),
+                      label: const Text('Message'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text('${ugx(t.fare)} cash · you keep ${ugx(t.captainEarnings ?? t.fare)} · ${t.distanceKm} km'),
         if (_error != null)
           Padding(
             padding: const EdgeInsets.only(top: 8),
@@ -328,8 +403,8 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         if (t.status == 'accepted' || t.status == 'arrived')
           TextButton(
-            onPressed: _busy ? null : () => _act('/api/trips/${t.id}/cancel'),
-            child: const Text('Cancel trip'),
+            onPressed: _busy ? null : () => _cancel(t),
+            child: Text('Cancel trip', style: TextStyle(color: Theme.of(context).colorScheme.error)),
           ),
       ],
     );
@@ -356,7 +431,19 @@ class _OfferCard extends StatelessWidget {
           children: [
             Text('${ugx(t.captainEarnings ?? t.fare)} for you · ${t.distanceKm} km trip',
                 style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
-            Text('Pickup is ${offer.distanceToPickupKm} km from you · fare ${ugx(t.fare)} cash'),
+            const SizedBox(height: 4),
+            Row(children: [
+              const Icon(Icons.trip_origin, size: 16, color: Colors.green),
+              const SizedBox(width: 6),
+              Expanded(child: Text(t.pickup.text, maxLines: 1, overflow: TextOverflow.ellipsis)),
+            ]),
+            Row(children: [
+              const Icon(Icons.stop, size: 16, color: Colors.red),
+              const SizedBox(width: 6),
+              Expanded(child: Text(t.dropoff.text, maxLines: 1, overflow: TextOverflow.ellipsis)),
+            ]),
+            const SizedBox(height: 4),
+            Text('Pickup is ${offer.distanceToPickupKm} km from you · about ${etaMinutes(offer.distanceToPickupKm)} min · fare ${ugx(t.fare)} cash'),
             const SizedBox(height: 8),
             Row(
               children: [

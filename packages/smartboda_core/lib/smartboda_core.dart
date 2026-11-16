@@ -2,6 +2,12 @@ library smartboda_core;
 
 export 'src/api.dart';
 export 'src/auth_screen.dart';
+export 'src/cancel.dart';
+export 'src/captain_details.dart';
+export 'src/chat_screen.dart';
+export 'src/geo.dart';
+export 'src/phone_actions.dart';
+export 'src/vehicle.dart';
 export 'src/format.dart';
 export 'src/history_screen.dart';
 export 'src/location.dart';

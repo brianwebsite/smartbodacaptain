@@ -40,6 +40,17 @@ permissions = """    <uses-permission android:name="android.permission.INTERNET"
 if "android.permission.INTERNET" not in xml:
     xml = xml.replace("<application", permissions + "    <application", 1)
 
+# Lets the app ask Android whether a phone app exists for "tel:" links (the Call buttons).
+if "android.intent.action.DIAL" not in xml:
+    queries = """    <queries>
+        <intent>
+            <action android:name="android.intent.action.DIAL"/>
+            <data android:scheme="tel"/>
+        </intent>
+    </queries>
+"""
+    xml = xml.replace("<application", queries + "    <application", 1)
+
 xml = re.sub(r'android:label="[^"]*"', f'android:label="{label}"', xml, count=1)
 
 if api_url.startswith("http://") and "usesCleartextTraffic" not in xml:

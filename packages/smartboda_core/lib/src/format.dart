@@ -38,3 +38,9 @@ String shortDate(DateTime t) {
   final mm = l.minute.toString().padLeft(2, '0');
   return '${l.day} ${months[l.month - 1]}, $hh:$mm';
 }
+
+String monthYear(DateTime t) {
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  final l = t.toLocal();
+  return '${months[l.month - 1]} ${l.year}';
+}

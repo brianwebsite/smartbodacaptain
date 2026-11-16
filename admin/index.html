@@ -188,7 +188,7 @@ async function captains(body) {
 
   const rows = list.map((c) => h('tr', {},
     h('td', {}, h('strong', {}, c.name), h('div', { class: 'muted' }, c.phone)),
-    h('td', {}, c.bikePlate, h('div', { class: 'muted' }, c.bikeModel || '')),
+    h('td', {}, c.bikePlate, h('div', { class: 'muted' }, vehicleName(c.vehicleType) + (c.bikeModel ? ' · ' + c.bikeModel : ''))),
     h('td', {}, 'ID ' + c.nationalId, h('div', { class: 'muted' }, 'Permit ' + c.permitNumber)),
     h('td', {}, c.stageName || ''),
     h('td', {}, pill(c.status), c.online ? h('div', { class: 'muted' }, 'online') : null),
@@ -227,11 +227,21 @@ async function live(body) {
 }
 
 // ---------- trips ----------
+const VEHICLE_NAMES = { boda: 'Boda', electric_boda: 'Electric boda', car: 'Car' };
+const vehicleName = (t) => VEHICLE_NAMES[t] || t || '';
+const CANCEL_NAMES = {
+  changed_mind: 'Changed mind', wait_too_long: 'Waited too long', captain_far: 'Captain too far', wrong_pickup: 'Wrong pickup/drop-off',
+  found_other_ride: 'Found another ride', price_too_high: 'Price too high', passenger_no_show: 'Passenger did not show',
+  passenger_asked: 'Passenger asked to cancel', too_far: 'Pickup too far', vehicle_problem: 'Vehicle problem', safety: 'Safety', other: 'Other',
+};
+
 function tripTable(list) {
   return h('table', {},
-    h('thead', {}, h('tr', {}, ['When', 'Status', 'Passenger', 'Captain', 'From', 'To', 'Distance', 'Fare', 'Commission'].map((t) => h('th', {}, t)))),
+    h('thead', {}, h('tr', {}, ['When', 'Status', 'Type', 'Passenger', 'Captain', 'From', 'To', 'Distance', 'Fare', 'Commission'].map((t) => h('th', {}, t)))),
     h('tbody', {}, list.map((t) => h('tr', {},
-      h('td', {}, when(t.createdAt)), h('td', {}, pill(t.status)),
+      h('td', {}, when(t.createdAt)),
+      h('td', {}, pill(t.status), t.status === 'cancelled' ? h('div', { class: 'muted' }, (t.cancelledBy || '') + (t.cancelReason ? ': ' + (CANCEL_NAMES[t.cancelReason] || t.cancelReason) : '')) : null),
+      h('td', {}, vehicleName(t.vehicleType)),
       h('td', {}, t.passenger.name, h('div', { class: 'muted' }, t.passenger.phone)),
       h('td', {}, t.captain ? [t.captain.name, h('div', { class: 'muted' }, t.captain.bikePlate)] : h('span', { class: 'muted' }, 'none')),
       h('td', {}, mapLink(t.pickup.lat, t.pickup.lng, place(t.pickup))),
@@ -257,6 +267,9 @@ async function settings(body) {
     commission: field('Commission (%)', Math.round(s.fare.commissionRate * 1000) / 10, '0.5'),
     roundTo: field('Round fares to nearest (UGX)', s.fare.roundTo),
     maxKm: field('Offer trips to captains within (km)', s.dispatch.maxKm, '0.1'), limit: field('Nearest captains offered each trip', s.dispatch.limit),
+    mBoda: field('Boda price level (1 = base fare)', s.vehicles.boda.multiplier, '0.05'),
+    mElectric: field('Electric boda price level', s.vehicles.electric_boda.multiplier, '0.05'),
+    mCar: field('Car price level (2 = double)', s.vehicles.car.multiplier, '0.05'),
     stale: field('Ignore locations older than (seconds)', s.dispatch.staleAfterSeconds), offer: field('Give up finding a captain after (seconds)', s.dispatch.offerSeconds),
   };
   const v = (k) => Number(f[k][1].value);
@@ -267,6 +280,7 @@ async function settings(body) {
     try {
       await api('/api/admin/settings', { method: 'PUT', body: {
         fare: { baseFare: v('baseFare'), perKm: v('perKm'), perMinute: v('perMinute'), minimumFare: v('minimumFare'), commissionRate: v('commission') / 100, roundTo: v('roundTo') },
+        vehicles: { boda: { multiplier: v('mBoda') }, electric_boda: { multiplier: v('mElectric') }, car: { multiplier: v('mCar') } },
         dispatch: { maxKm: v('maxKm'), limit: v('limit'), staleAfterSeconds: v('stale'), offerSeconds: v('offer') } } });
       status.textContent = 'Saved. New trips use these numbers.';
     } catch (ex) { status.className = 'err'; status.textContent = ex.message; }

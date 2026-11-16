@@ -4,6 +4,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'api.dart';
 import 'session.dart';
 import 'theme.dart';
+import 'vehicle.dart';
 
 enum _Stage { welcome, method, questions }
 
@@ -24,6 +25,7 @@ class _Q {
     this.cap = TextCapitalization.none,
     this.minLength = 1,
     this.isEmail = false,
+    this.choices,
   });
 
   final String id;
@@ -37,9 +39,12 @@ class _Q {
   final int minLength;
   final bool isEmail;
 
+  /// When set, the question is answered by tapping one of these instead of typing.
+  final List<VehicleType>? choices;
+
   String? check(String value) {
     final v = value.trim();
-    if (v.isEmpty) return optional ? null : 'Please answer this to continue';
+    if (v.isEmpty) return optional ? null : (choices != null ? 'Please pick one to continue' : 'Please answer this to continue');
     if (isEmail && !RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$').hasMatch(v)) {
       return 'That does not look like an email address';
     }
@@ -143,13 +148,19 @@ class _AuthScreenState extends State<AuthScreen> {
         _phoneQ('phone', hint: 'Captains use it to reach you about your ride.'),
       ];
     }
+    final phoneQ = _phoneQ('phone',
+        hint: _isCaptain
+            ? 'Passengers and Smart Boda use it to reach you.'
+            : 'Captains use it to reach you about your ride.');
     return [
-      _nameQ(),
-      if (_method == _Method.email) _emailQ('email'),
-      _phoneQ('phone',
-          hint: _isCaptain
-              ? 'Passengers and Smart Boda use it to reach you.'
-              : 'Captains use it to reach you about your ride.'),
+      if (_method == _Method.email) ...[
+        _emailQ('email', title: 'What is your email address?'),
+        _nameQ(),
+        phoneQ,
+      ] else ...[
+        _phoneQ('phone', title: 'What is your phone number?', hint: 'We will use it to sign you in.'),
+        _nameQ(),
+      ],
       const _Q(
         id: 'password',
         title: 'Choose a password',
@@ -164,17 +175,24 @@ class _AuthScreenState extends State<AuthScreen> {
 
   List<_Q> _captainQuestions() => const [
         _Q(
+          id: 'vehicleType',
+          title: 'What will you drive?',
+          hint: 'Passengers choose a type when they ask for a ride.',
+          label: 'Vehicle',
+          choices: vehicleTypes,
+        ),
+        _Q(
           id: 'bikePlate',
-          title: 'What is your bike number plate?',
+          title: 'What is your number plate?',
           label: 'Number plate (UBA 123X)',
           cap: TextCapitalization.characters,
           minLength: 3,
         ),
         _Q(
           id: 'bikeModel',
-          title: 'What kind of bike is it?',
-          hint: 'For example Bajaj Boxer. You can skip this.',
-          label: 'Bike model',
+          title: 'What make and model is it?',
+          hint: 'For example Bajaj Boxer or Toyota Premio. You can skip this.',
+          label: 'Make and model',
           optional: true,
         ),
         _Q(
@@ -270,6 +288,7 @@ class _AuthScreenState extends State<AuthScreen> {
           'password': _controller('password').text,
           if (_method == _Method.email) 'email': _answer('email'),
           if (_isCaptain) ...{
+            'vehicleType': _answer('vehicleType'),
             'bikePlate': _answer('bikePlate'),
             'bikeModel': _answer('bikeModel'),
             'nationalId': _answer('nationalId'),
@@ -470,6 +489,48 @@ class _AuthScreenState extends State<AuthScreen> {
                   Text(q.hint!, style: t.bodyMedium),
                 ],
                 const SizedBox(height: 24),
+                if (q.choices != null)
+                  for (final v in q.choices!)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: _busy
+                            ? null
+                            : () => setState(() {
+                                  c.text = v.id;
+                                  _error = null;
+                                }),
+                        child: Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: c.text == v.id ? bodaGreen : Colors.black26,
+                              width: c.text == v.id ? 2.5 : 1,
+                            ),
+                            color: c.text == v.id ? bodaGreen.withValues(alpha: 0.08) : null,
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(v.icon, size: 34, color: v.color),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(v.label, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+                                    Text(v.blurb),
+                                  ],
+                                ),
+                              ),
+                              if (c.text == v.id) const Icon(Icons.check_circle, color: bodaGreen),
+                            ],
+                          ),
+                        ),
+                      ),
+                    )
+                else
                 TextField(
                   controller: c,
                   autofocus: true,
