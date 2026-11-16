@@ -39,8 +39,13 @@ export function rankCaptains({
       const seen = Date.parse(c.locationAt);
       return !Number.isNaN(seen) && nowMs - seen <= staleAfterSeconds * 1000 && nowMs >= seen;
     })
-    .map((c) => ({ id: c.id, distanceKm: haversineKm(pickup, c.location) }))
-    .filter((c) => c.distanceKm <= maxKm)
-    .sort((a, b) => a.distanceKm - b.distanceKm || (a.id < b.id ? -1 : 1))
-    .slice(0, limit);
+    .map((c) => {
+      const distanceKm = haversineKm(pickup, c.location);
+      // Captains who cancel a lot are treated as if they were further away.
+      return { id: c.id, distanceKm, score: distanceKm * (c.distanceFactor ?? 1) };
+    })
+    .filter((c) => c.score <= maxKm)
+    .sort((a, b) => a.score - b.score || (a.id < b.id ? -1 : 1))
+    .slice(0, limit)
+    .map(({ id, distanceKm }) => ({ id, distanceKm }));
 }

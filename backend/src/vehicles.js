@@ -1,19 +1,24 @@
 // Vehicle types, how their prices relate, how long a captain takes to arrive,
 // and the reasons people can give when cancelling.
 
-export const VEHICLE_TYPES = Object.freeze(['boda', 'electric_boda', 'car']);
+export const VEHICLE_TYPES = Object.freeze(['boda', 'electric_boda', 'car', 'car_xl']);
 
 export const VEHICLE_LABELS = Object.freeze({
   boda: 'Boda',
   electric_boda: 'Electric boda',
   car: 'Car',
+  car_xl: 'Car XL',
 });
+
+/** Passenger seats, shown to people choosing a ride. */
+export const VEHICLE_SEATS = Object.freeze({ boda: 1, electric_boda: 1, car: 3, car_xl: 6 });
 
 /** Price level of each type compared with the base fare formula. The admin can change these. */
 export const DEFAULT_VEHICLES = Object.freeze({
   boda: { multiplier: 1 },
   electric_boda: { multiplier: 1 },
   car: { multiplier: 2 },
+  car_xl: { multiplier: 3 },
 });
 
 export const CANCEL_REASONS = Object.freeze({

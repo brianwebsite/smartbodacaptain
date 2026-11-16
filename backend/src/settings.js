@@ -16,8 +16,16 @@ function read(db, key, defaults) {
   return { ...defaults, ...(row ? JSON.parse(row.value) : {}) };
 }
 
+export const DEFAULT_NIGHT = Object.freeze({ percent: 5, startHour: 22, endHour: 5 });
+export const DEFAULT_LIMITS = Object.freeze({
+  captainDebtLimit: 50000, // a captain who owes more commission than this cannot go online
+  deliveryMultiplier: 1, // price level of delivery trips compared with a normal ride
+});
+
 export const getFareConfig = (db) => read(db, 'fare', DEFAULT_FARE_CONFIG);
 export const getDispatchConfig = (db) => read(db, 'dispatch', DEFAULT_DISPATCH);
+export const getNightConfig = (db) => read(db, 'night', DEFAULT_NIGHT);
+export const getLimits = (db) => read(db, 'limits', DEFAULT_LIMITS);
 export const getVehicleConfig = (db) => read(db, 'vehicles', DEFAULT_VEHICLES);
 
 function write(db, key, value) {
@@ -69,5 +77,26 @@ export function updateSettings(db, body) {
     }
     write(db, 'vehicles', next);
   }
-  return { fare: getFareConfig(db), dispatch: getDispatchConfig(db), vehicles: getVehicleConfig(db) };
+  if (body.night !== undefined) {
+    const n = obj(body.night, 'night');
+    const next = { ...getNightConfig(db) };
+    if (n.percent !== undefined) next.percent = num(n.percent, 'percent', { min: 0, max: 100 });
+    if (n.startHour !== undefined) next.startHour = int(n.startHour, 'startHour', { min: 0, max: 23 });
+    if (n.endHour !== undefined) next.endHour = int(n.endHour, 'endHour', { min: 0, max: 23 });
+    write(db, 'night', next);
+  }
+  if (body.limits !== undefined) {
+    const l = obj(body.limits, 'limits');
+    const next = { ...getLimits(db) };
+    if (l.captainDebtLimit !== undefined) next.captainDebtLimit = int(l.captainDebtLimit, 'captainDebtLimit', { min: 0, max: 10_000_000 });
+    if (l.deliveryMultiplier !== undefined) next.deliveryMultiplier = num(l.deliveryMultiplier, 'deliveryMultiplier', { min: 0.5, max: 5 });
+    write(db, 'limits', next);
+  }
+  return {
+    fare: getFareConfig(db),
+    dispatch: getDispatchConfig(db),
+    vehicles: getVehicleConfig(db),
+    night: getNightConfig(db),
+    limits: getLimits(db),
+  };
 }

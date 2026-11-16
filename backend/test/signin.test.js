@@ -68,26 +68,24 @@ test('duplicate email and bad email are refused with clear codes', async () => {
 
 test('options say Google is off until the server has a client ID', async () => {
   const off = await start();
-  assert.deepEqual((await off.call('GET', '/api/auth/options')).body, { google: null });
+  assert.deepEqual((await off.call('GET', '/api/auth/options')).body, { google: null, passwordReset: false });
   assert.equal((await off.call('POST', '/api/auth/google', { idToken: 'ok:1:a@b.co:Al' })).body.code, 'google_unavailable');
   off.close();
   const on = await start({ google: true });
-  assert.deepEqual((await on.call('GET', '/api/auth/options')).body, { google: { serverClientId: 'web-client-id' } });
+  assert.deepEqual((await on.call('GET', '/api/auth/options')).body, { google: { serverClientId: 'web-client-id' }, passwordReset: false });
   on.close();
 });
 
-test('Google: new person is asked for a phone number, then signed up; next time signs straight in', async () => {
+test('Google: a new person is signed up straight away (no phone needed); next time signs straight in', async () => {
   const { call, close } = await start({ google: true });
-  const first = await call('POST', '/api/auth/google', { idToken: 'ok:g1:amina@gmail.com:Amina K' });
-  assert.equal(first.status, 200);
-  assert.equal(first.body.needsProfile, true);
-  assert.equal(first.body.email, 'amina@gmail.com');
-
-  const done = await call('POST', '/api/auth/google', { idToken: 'ok:g1:amina@gmail.com:Amina K', phone: '0772300010' });
+  const done = await call('POST', '/api/auth/google', { idToken: 'ok:g1:amina@gmail.com:Amina K' });
   assert.equal(done.status, 201);
   assert.equal(done.body.user.role, 'passenger');
-  assert.equal(done.body.user.phone, '+256772300010');
+  assert.equal(done.body.user.phone, null);
   assert.equal(done.body.user.email, 'amina@gmail.com');
+
+  const noName = await call('POST', '/api/auth/google', { idToken: 'ok:g2:x@gmail.com:' });
+  assert.equal(noName.body.needsProfile, true);
 
   const again = await call('POST', '/api/auth/google', { idToken: 'ok:g1:amina@gmail.com:Amina K' });
   assert.equal(again.status, 200);

@@ -19,9 +19,9 @@ const S = TRIP_STATUS;
 // next status -> { from: allowed current statuses, by: who may do it }
 const RULES = Object.freeze({
   [S.ACCEPTED]: { from: [S.REQUESTED], by: ['captain'] },
-  [S.ARRIVED]: { from: [S.ACCEPTED], by: ['captain'] },
-  [S.IN_PROGRESS]: { from: [S.ARRIVED], by: ['captain'] },
-  [S.COMPLETED]: { from: [S.IN_PROGRESS], by: ['captain'] },
+  [S.ARRIVED]: { from: [S.ACCEPTED], by: ['captain', 'system'] },
+  [S.IN_PROGRESS]: { from: [S.ARRIVED], by: ['captain', 'system'] },
+  [S.COMPLETED]: { from: [S.IN_PROGRESS], by: ['captain', 'system'] },
   [S.CANCELLED]: { from: [S.REQUESTED, S.ACCEPTED, S.ARRIVED], by: ['passenger', 'captain'] },
   [S.NO_CAPTAIN]: { from: [S.REQUESTED], by: ['system'] },
 });
@@ -61,8 +61,8 @@ export function createTrip({ id, passengerId, pickup, dropoff, fare, paymentMeth
   requirePlace(dropoff, 'dropoff');
   requireTime(at);
   if (!Number.isInteger(fare) || fare <= 0) throw new TripError('fare must be whole UGX above 0');
-  if (!['cash', 'mobile_money'].includes(paymentMethod)) {
-    throw new TripError('paymentMethod must be cash or mobile_money');
+  if (!['cash', 'wallet', 'mobile_money'].includes(paymentMethod)) {
+    throw new TripError('paymentMethod must be cash, wallet or mobile_money');
   }
   return {
     id,

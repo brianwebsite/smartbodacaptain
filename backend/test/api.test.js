@@ -215,9 +215,9 @@ test('a full cash trip from request to rating, with earnings and commission', as
   assert.ok(cur.body.trip.captain.location);
 
   // The captain's moving location shows up for the passenger.
-  await h.call('POST', '/api/captain/location', { lat: 0.3555, lng: 32.615 }, c.token);
+  await h.call('POST', '/api/captain/location', { lat: 0.3565, lng: 32.615 }, c.token);
   const moved = await h.call('GET', '/api/passenger/current', undefined, p.token);
-  assert.equal(moved.body.trip.captain.location.lat, 0.3555);
+  assert.equal(moved.body.trip.captain.location.lat, 0.3565);
 
   // Other captains see no offers once the trip is taken, and the captain sees their active trip.
   assert.deepEqual((await h.call('GET', '/api/captain/offers', undefined, c.token)).body.offers, []);

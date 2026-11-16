@@ -2,7 +2,7 @@
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, createHash, randomInt } from 'node:crypto';
 
 import { calculateFare } from './fare.js';
 import { rankCaptains } from './dispatch.js';
@@ -18,8 +18,14 @@ import {
   RateLimiter,
 } from './auth.js';
 import { Router, readJson, sendJson } from './http.js';
-import { getFareConfig, getDispatchConfig, getVehicleConfig, updateSettings } from './settings.js';
-import { VEHICLE_TYPES, CANCEL_REASONS, scaleFareConfig, etaMinutes } from './vehicles.js';
+import {
+  getFareConfig, getDispatchConfig, getVehicleConfig, getNightConfig, getLimits, updateSettings,
+} from './settings.js';
+import { nightPercent } from './night.js';
+import * as wallet from './wallet.js';
+import { captainCancelCounts, passengerCancelCount, captainStanding, passengerStanding } from './behavior.js';
+import { haversineKm } from './geo.js';
+import { VEHICLE_TYPES, VEHICLE_SEATS, CANCEL_REASONS, scaleFareConfig, etaMinutes } from './vehicles.js';
 import { HttpError, bad, obj, text, oneOf, bool, num, int, point } from './validate.js';
 
 const ACTIVE_STATUSES = [S.REQUESTED, S.ACCEPTED, S.ARRIVED, S.IN_PROGRESS];
@@ -38,6 +44,7 @@ export function createApp({
   googleVerify = null,
   googleClientId = null,
   places = null,
+  mailer = null,
 }) {
   const router = new Router();
   const loginByPhone = new RateLimiter(10, 15 * 60 * 1000);
@@ -45,6 +52,10 @@ export function createApp({
   const registerByIp = new RateLimiter(20, 60 * 60 * 1000);
   const placesByUser = new RateLimiter(60, 60 * 1000);
   const messagesByUser = new RateLimiter(40, 60 * 1000);
+  const forgotByIp = new RateLimiter(10, 60 * 60 * 1000);
+  const forgotByEmail = new RateLimiter(3, 60 * 60 * 1000);
+  const resetByEmail = new RateLimiter(5, 15 * 60 * 1000);
+  const fmtUgx = (n) => `UGX ${Math.round(n).toLocaleString('en-US')}`;
 
   // ---------- database helpers ----------
 
@@ -132,6 +143,12 @@ export function createApp({
       updatedAt: row.updated_at,
       completedAt: row.completed_at,
       rating: row.rating,
+      kind: row.kind,
+      deliveryItem: row.delivery_item,
+      receiverName: row.receiver_name,
+      receiverPhone: row.receiver_phone,
+      nightPercent: row.night_percent,
+      autoStarted: Boolean(row.auto_started),
     };
     if (viewer === 'passenger' || viewer === 'admin') {
       if (row.captain_id) {
@@ -159,7 +176,14 @@ export function createApp({
     }
     if (viewer === 'captain' || viewer === 'admin') {
       const pu = getUser(row.passenger_id);
-      view.passenger = { id: pu.id, name: pu.name, phone: pu.phone };
+      const pr = db
+        .prepare('SELECT AVG(passenger_rating) AS avg, COUNT(passenger_rating) AS n FROM trips WHERE passenger_id = ?')
+        .get(pu.id);
+      view.passenger = {
+        id: pu.id, name: pu.name, phone: pu.phone,
+        rating: pr.avg == null ? null : round1(pr.avg), ratingCount: pr.n,
+      };
+      view.passengerRating = row.passenger_rating;
       view.commission = row.commission;
       view.captainEarnings = row.captain_earnings;
     }
@@ -185,7 +209,38 @@ export function createApp({
 
   // ---------- dispatch ----------
 
+  /** Commission owed for every captain at once: cash commission earned minus what was paid. */
+  function owedByCaptain() {
+    const owed = new Map();
+    for (const r of db
+      .prepare(`SELECT captain_id AS id, SUM(commission) AS v FROM trips
+                WHERE status = 'completed' AND payment_method = 'cash' AND captain_id IS NOT NULL GROUP BY captain_id`)
+      .all()) owed.set(r.id, r.v);
+    for (const r of db.prepare('SELECT captain_id AS id, SUM(amount) AS v FROM settlements GROUP BY captain_id').all()) {
+      owed.set(r.id, (owed.get(r.id) ?? 0) - r.v);
+    }
+    return owed;
+  }
+
+  /** Throws when this captain may not take trips right now (cancelled too much, or owes too much). */
+  function captainGate(userId) {
+    const st = captainStanding(captainCancelCounts(db, now()).get(userId), now());
+    if (st.level === 'paused') throw new HttpError(403, st.message, 'paused');
+    const limit = getLimits(db).captainDebtLimit;
+    const owed = commissionOwed(userId);
+    if (owed > limit) {
+      throw new HttpError(
+        403,
+        `You owe Smart Boda ${fmtUgx(owed)} in commission. Pay it to keep taking trips (the limit is ${fmtUgx(limit)}).`,
+        'debt_limit',
+      );
+    }
+  }
+
   function candidateCaptains() {
+    const cancels = captainCancelCounts(db, now());
+    const owed = owedByCaptain();
+    const limit = getLimits(db).captainDebtLimit;
     return db
       .prepare(
         `SELECT u.id, p.lat, p.lng, p.location_at, p.vehicle_type,
@@ -195,7 +250,11 @@ export function createApp({
          WHERE p.online = 1 AND u.status = 'active' AND p.lat IS NOT NULL`,
       )
       .all(...WITH_CAPTAIN_STATUSES)
-      .map((c) => ({
+      .filter((c) => (owed.get(c.id) ?? 0) <= limit)
+      .map((c) => ({ c, st: captainStanding(cancels.get(c.id), now()) }))
+      .filter(({ st }) => st.level !== 'paused')
+      .map(({ c, st }) => ({
+        distanceFactor: st.rankFactor,
         id: c.id,
         approved: true,
         online: true,
@@ -229,21 +288,26 @@ export function createApp({
     return route;
   }
 
-  function priceFor(route, vehicleType) {
-    const multiplier = getVehicleConfig(db)[vehicleType]?.multiplier ?? 1;
-    return calculateFare(
-      { distanceKm: route.distanceKm, durationMin: route.durationMin },
-      scaleFareConfig(getFareConfig(db), multiplier),
-    );
+  function priceFor(route, vehicleType, kind = 'ride') {
+    const vehicle = getVehicleConfig(db)[vehicleType]?.multiplier ?? 1;
+    const delivery = kind === 'delivery' ? getLimits(db).deliveryMultiplier : 1;
+    const night = nightPercent(now(), getNightConfig(db));
+    return {
+      ...calculateFare(
+        { distanceKm: route.distanceKm, durationMin: route.durationMin },
+        scaleFareConfig(getFareConfig(db), vehicle * delivery * (1 + night / 100)),
+      ),
+      nightPercent: night,
+    };
   }
 
-  async function quote(pickup, dropoff, vehicleType = 'boda') {
+  async function quote(pickup, dropoff, vehicleType = 'boda', kind = 'ride') {
     const route = await routeFor(pickup, dropoff);
     return {
       distanceKm: route.distanceKm,
       durationMin: route.durationMin,
       source: route.source,
-      ...priceFor(route, vehicleType),
+      ...priceFor(route, vehicleType, kind),
     };
   }
 
@@ -373,7 +437,65 @@ export function createApp({
 
   router.add('GET', '/api/auth/options', () => ({
     google: googleVerify && googleClientId ? { serverClientId: googleClientId } : null,
+    passwordReset: Boolean(mailer),
   }));
+
+  // Forgot password: a 6-digit code goes to the account's email address.
+  router.add('POST', '/api/auth/forgot', async ({ body, ip }) => {
+    obj(body);
+    const email = parseEmail(body.email, false);
+    const t = Date.parse(now());
+    if (!forgotByIp.allow(ip, t) || !forgotByEmail.allow(email, t)) {
+      throw new HttpError(429, 'Too many requests. Try again later.', 'rate_limited');
+    }
+    if (!mailer) {
+      throw new HttpError(503, 'Password reset by email is not set up yet. Ask Smart Boda support to reset it.', 'email_unavailable');
+    }
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    if (user && user.status !== 'suspended') {
+      const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+      db.prepare('DELETE FROM password_resets WHERE user_id = ?').run(user.id);
+      db.prepare('INSERT INTO password_resets (token_hash, user_id, expires_at) VALUES (?,?,?)').run(
+        hashToken(user.id + code), user.id, new Date(t + 15 * 60 * 1000).toISOString(),
+      );
+      try {
+        await mailer.send({
+          to: email,
+          subject: 'Your Smart Boda reset code',
+          text: `Your Smart Boda code is ${code}. It works for 15 minutes. If you did not ask for it, ignore this email.`,
+        });
+      } catch (err) {
+        console.error('reset email failed:', err.message);
+        throw new HttpError(503, 'We could not send the email. Try again in a moment.', 'email_failed');
+      }
+    }
+    // Same answer whether or not the email has an account.
+    return { ok: true };
+  });
+
+  router.add('POST', '/api/auth/reset', ({ body }) => {
+    obj(body);
+    const email = parseEmail(body.email, false);
+    const code = text(body.code, 'Code', { min: 6, max: 6 });
+    const password = text(body.password, 'Password', { min: 6, max: 128 });
+    const t = Date.parse(now());
+    if (!resetByEmail.allow(email, t)) {
+      throw new HttpError(429, 'Too many tries. Ask for a new code in a few minutes.', 'rate_limited');
+    }
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    const row = user
+      ? db
+          .prepare('SELECT * FROM password_resets WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?')
+          .get(hashToken(user.id + code), now())
+      : null;
+    if (!row) throw new HttpError(400, 'That code is wrong or has expired', 'bad_code');
+    transaction(db, () => {
+      db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), user.id);
+      db.prepare('UPDATE password_resets SET used_at = ? WHERE token_hash = ?').run(now(), row.token_hash);
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+    });
+    return { ok: true };
+  });
 
   router.add('POST', '/api/auth/register', ({ body, ip }) => {
     if (!registerByIp.allow(ip, Date.parse(now()))) {
@@ -382,8 +504,11 @@ export function createApp({
     obj(body);
     const role = oneOf(body.role, 'role', ['passenger', 'captain']);
     const name = text(body.name, 'Name', { min: 2, max: 80 });
-    const phone = parsePhone(body.phone);
     const email = parseEmail(body.email);
+    // Passengers may sign up with just an email. Captains always need a phone number.
+    const hasPhone = body.phone != null && String(body.phone).trim() !== '';
+    if (!hasPhone && !(role === 'passenger' && email)) throw bad('Enter your phone number', 'bad_phone');
+    const phone = hasPhone ? parsePhone(body.phone) : null;
     const password = text(body.password, 'Password', { min: 6, max: 128 });
     const profile = role === 'captain' ? parseCaptainProfile(body) : null;
     return createAccount({ role, name, phone, email, passwordHash: hashPassword(password), profile });
@@ -416,14 +541,14 @@ export function createApp({
       throw new HttpError(409, 'That email already has an account. Sign in with your password instead.', 'email_taken');
     }
     const name = (typeof body.name === 'string' && body.name.trim()) || g.name;
-    if (body.phone == null || name.trim().length < 2) {
+    if (name.trim().length < 2) {
       return { needsProfile: true, name: g.name, email: g.email };
     }
     if (!registerByIp.allow(ip, t)) {
       throw new HttpError(429, 'Too many sign-ups from this connection. Try again later.', 'rate_limited');
     }
     const cleanName = text(name, 'Name', { min: 2, max: 80 });
-    const phone = parsePhone(body.phone);
+    const phone = body.phone == null || String(body.phone).trim() === '' ? null : parsePhone(body.phone);
     // Google users have no password; store a hash of random bytes nobody knows.
     return createAccount({
       role: 'passenger',
@@ -469,8 +594,16 @@ export function createApp({
 
   function meView(u) {
     const view = { id: u.id, role: u.role, name: u.name, phone: u.phone, email: u.email ?? null, status: u.status };
+    if (u.role === 'passenger') {
+      view.wallet = { balance: wallet.balance(db, u.id), available: wallet.available(db, u.id) };
+      view.standing = passengerStanding(passengerCancelCount(db, u.id, now()), now());
+    }
     if (u.role === 'captain') {
       const p = getProfile(u.id);
+      view.wallet = { balance: wallet.balance(db, u.id), available: wallet.balance(db, u.id) };
+      view.standing = captainStanding(captainCancelCounts(db, now()).get(u.id), now());
+      view.commissionOwed = commissionOwed(u.id);
+      view.debtLimit = getLimits(db).captainDebtLimit;
       view.captain = {
         bikePlate: p.bike_plate,
         bikeModel: p.bike_model,
@@ -538,7 +671,7 @@ export function createApp({
         if (!mine) throw new HttpError(404, 'Trip not found');
         saveTransition(row, transitionTrip(rowToTrip(row), S.CANCELLED, { by: user.role, actorId: user.id, at: now() }));
         db.prepare('UPDATE trips SET cancel_reason = ?, cancelled_by = ? WHERE id = ?').run(reason, user.role, row.id);
-        return { trip: tripView(getTripRow(row.id), user.role) };
+        return { trip: tripView(getTripRow(row.id), user.role), user: meView(getUser(user.id)) };
       });
     },
     { roles: ['passenger', 'captain'] },
@@ -658,14 +791,16 @@ export function createApp({
   router.add(
     'POST',
     '/api/fare/estimate',
-    async ({ body }) => {
+    async ({ user, body }) => {
       obj(body);
       const pickup = point(body.pickup, 'pickup');
+      const kind = body.kind === undefined ? 'ride' : oneOf(body.kind, 'kind', ['ride', 'delivery']);
       const route = await routeFor(pickup, point(body.dropoff, 'dropoff'));
       const near = nearbySummary(nearbyCaptains(pickup));
       const options = VEHICLE_TYPES.map((t) => ({
         vehicleType: t,
-        fare: priceFor(route, t).fare,
+        seats: VEHICLE_SEATS[t],
+        fare: priceFor(route, t, kind).fare,
         nearbyCount: near[t].count,
         etaMin: near[t].etaMin,
       }));
@@ -675,7 +810,10 @@ export function createApp({
         fare: options[0].fare,
         options,
         source: route.source,
-        paymentMethods: ['cash'],
+        kind,
+        nightPercent: priceFor(route, 'boda', kind).nightPercent,
+        paymentMethods: ['cash', 'wallet'],
+        wallet: { available: wallet.available(db, user.id) },
       };
     },
     { roles: ['passenger'] },
@@ -689,29 +827,49 @@ export function createApp({
       const pickup = point(body.pickup, 'pickup');
       const dropoff = point(body.dropoff, 'dropoff');
       const pm = body.paymentMethod ?? 'cash';
-      if (pm !== 'cash') {
-        throw new HttpError(400, 'Only cash payment is available right now', 'payment_unavailable');
+      if (!['cash', 'wallet'].includes(pm)) {
+        throw new HttpError(400, 'Choose cash or your Smart Boda wallet', 'payment_unavailable');
       }
+      const standing = passengerStanding(passengerCancelCount(db, user.id, now()), now());
+      if (standing.level === 'blocked') throw new HttpError(403, standing.message, 'blocked');
+      const kind = body.kind === undefined ? 'ride' : oneOf(body.kind, 'kind', ['ride', 'delivery']);
+      const delivery =
+        kind === 'delivery'
+          ? {
+              item: text(body.deliveryItem, 'What are we delivering?', { min: 2, max: 120 }),
+              receiverName: text(body.receiverName, 'Receiver name', { min: 2, max: 80 }),
+              receiverPhone: parsePhone(body.receiverPhone),
+            }
+          : { item: null, receiverName: null, receiverPhone: null };
       const pickupLabel = text(body.pickupLabel, 'pickupLabel', { max: 120, optional: true });
       const dropoffLabel = text(body.dropoffLabel, 'dropoffLabel', { max: 120, optional: true });
       const vehicleType = body.vehicleType === undefined ? 'boda' : oneOf(body.vehicleType, 'vehicleType', VEHICLE_TYPES);
-      const q = await quote(pickup, dropoff, vehicleType);
+      const q = await quote(pickup, dropoff, vehicleType, kind);
       const id = randomUUID();
       const at = now();
-      const trip = createTrip({ id, passengerId: user.id, pickup, dropoff, fare: q.fare, paymentMethod: 'cash', at });
+      const trip = createTrip({ id, passengerId: user.id, pickup, dropoff, fare: q.fare, paymentMethod: pm, at });
       transaction(db, () => {
         if (activeTripForPassenger(user.id)) {
           throw new HttpError(409, 'You already have a trip in progress', 'trip_active');
         }
+        if (pm === 'wallet' && wallet.available(db, user.id) < q.fare) {
+          throw new HttpError(
+            402,
+            `Your wallet has ${fmtUgx(wallet.available(db, user.id))}, but this trip costs ${fmtUgx(q.fare)}. Add money or pay cash.`,
+            'insufficient_wallet',
+          );
+        }
         db.prepare(
           `INSERT INTO trips (id, passenger_id, pickup_lat, pickup_lng, pickup_label, dropoff_lat, dropoff_lng,
              dropoff_label, distance_km, duration_min, route_source, fare, commission, captain_earnings,
-             payment_method, status, history, created_at, updated_at, vehicle_type)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+             payment_method, status, history, created_at, updated_at, vehicle_type,
+             kind, delivery_item, receiver_name, receiver_phone, night_percent)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         ).run(
           id, user.id, pickup.lat, pickup.lng, pickupLabel, dropoff.lat, dropoff.lng, dropoffLabel,
           q.distanceKm, q.durationMin, q.source, q.fare, q.commission, q.captainEarnings,
           trip.paymentMethod, trip.status, JSON.stringify(trip.history), at, at, vehicleType,
+          kind, delivery.item, delivery.receiverName, delivery.receiverPhone, q.nightPercent,
         );
       });
       return { status: 201, body: { trip: tripView(getTripRow(id), 'passenger') } };
@@ -759,6 +917,35 @@ export function createApp({
     { roles: ['passenger'] },
   );
 
+  // ---------- routes: wallet ----------
+
+  router.add(
+    'GET',
+    '/api/wallet',
+    ({ user }) => ({
+      balance: wallet.balance(db, user.id),
+      held: wallet.held(db, user.id),
+      available: user.role === 'captain' ? wallet.balance(db, user.id) : wallet.available(db, user.id),
+      entries: wallet.entries(db, user.id),
+      topupAvailable: false,
+    }),
+    { roles: ['passenger', 'captain'] },
+  );
+
+  router.add(
+    'POST',
+    '/api/wallet/topup',
+    ({ user }) => {
+      if (user.role !== 'passenger') throw new HttpError(403, 'Not allowed', 'forbidden');
+      throw new HttpError(
+        503,
+        'Adding money by mobile money is coming soon. Until then, pay cash or ask Smart Boda to credit your wallet.',
+        'topup_unavailable',
+      );
+    },
+    { roles: ['passenger', 'captain'] },
+  );
+
   // ---------- routes: captain ----------
 
   function requireActiveCaptain(user) {
@@ -776,6 +963,7 @@ export function createApp({
       obj(body);
       const online = bool(body.online, 'online');
       if (online) {
+        captainGate(user.id);
         const p = point(body, 'location');
         db.prepare('UPDATE captain_profiles SET online = 1, lat = ?, lng = ?, location_at = ? WHERE user_id = ?').run(
           p.lat, p.lng, now(), user.id,
@@ -789,6 +977,58 @@ export function createApp({
     { roles: ['captain'] },
   );
 
+  // If the captain forgets to tap, the phone's own location moves the trip along:
+  // near the pickup = arrived; driving away from the pickup = started;
+  // sitting at the drop-off after a real ride = completed.
+  const ARRIVE_KM = 0.06;
+  const LEAVE_KM = 0.15;
+  const DROPOFF_KM = 0.08;
+  function autoAdvance(row, p) {
+    const at = now();
+    const lastAt = (status) => [...JSON.parse(row.history)].reverse().find((h) => h.status === status)?.at;
+    try {
+      transaction(db, () => {
+        const fresh = getTripRow(row.id);
+        if (!fresh || fresh.status !== row.status) return;
+        const trip = rowToTrip(fresh);
+        if (fresh.status === S.ACCEPTED && haversineKm(p, trip.pickup) <= ARRIVE_KM) {
+          saveTransition(fresh, transitionTrip(trip, S.ARRIVED, { by: 'system', at }));
+        } else if (fresh.status === S.ARRIVED) {
+          const since = Date.parse(at) - Date.parse(lastAt(S.ARRIVED));
+          if (since >= 45_000 && haversineKm(p, trip.pickup) >= LEAVE_KM) {
+            saveTransition(fresh, transitionTrip(trip, S.IN_PROGRESS, { by: 'system', at }));
+            db.prepare('UPDATE trips SET auto_started = 1 WHERE id = ?').run(fresh.id);
+          }
+        } else if (fresh.status === S.IN_PROGRESS) {
+          const since = Date.parse(at) - Date.parse(lastAt(S.IN_PROGRESS));
+          if (since >= 120_000 && haversineKm(p, trip.dropoff) <= DROPOFF_KM) {
+            completeTrip(fresh, 'system', null);
+          }
+        }
+      });
+    } catch (err) {
+      if (!(err instanceof HttpError) && !(err instanceof TripError)) throw err;
+    }
+  }
+
+  /** Finishes a trip and moves the money. Call inside a transaction. */
+  function completeTrip(row, by, actorId) {
+    const at = now();
+    saveTransition(row, transitionTrip(rowToTrip(row), S.COMPLETED, { by, actorId, at }), at);
+    if (row.payment_method === 'wallet') {
+      wallet.addEntry(db, { userId: row.passenger_id, amount: -row.fare, kind: 'trip_payment', tripId: row.id, at });
+      wallet.addEntry(db, { userId: row.captain_id, amount: row.captain_earnings, kind: 'trip_earning', tripId: row.id, at });
+      // The captain's wallet earnings first pay off any commission they owe on cash trips.
+      const offset = Math.min(Math.max(commissionOwed(row.captain_id), 0), row.captain_earnings);
+      if (offset > 0) {
+        db.prepare('INSERT INTO settlements (id, captain_id, amount, note, created_at) VALUES (?,?,?,?,?)').run(
+          randomUUID(), row.captain_id, offset, `taken from wallet earnings (trip ${row.id.slice(0, 8)})`, at,
+        );
+        wallet.addEntry(db, { userId: row.captain_id, amount: -offset, kind: 'commission_netted', tripId: row.id, at });
+      }
+    }
+  }
+
   router.add(
     'POST',
     '/api/captain/location',
@@ -798,6 +1038,8 @@ export function createApp({
       db.prepare('UPDATE captain_profiles SET lat = ?, lng = ?, location_at = ? WHERE user_id = ?').run(
         p.lat, p.lng, now(), user.id,
       );
+      const active = activeTripForCaptain(user.id);
+      if (active) autoAdvance(active, p);
       return { ok: true };
     },
     { roles: ['captain'] },
@@ -849,6 +1091,7 @@ export function createApp({
       return transaction(db, () => {
         const profile = getProfile(user.id);
         if (!profile.online) throw new HttpError(409, 'Go online to accept trips', 'offline');
+        captainGate(user.id);
         if (activeTripForCaptain(user.id)) throw new HttpError(409, 'Finish your current trip first', 'on_trip');
         const row = getTripRow(params.id);
         if (!row) throw new HttpError(404, 'Trip not found');
@@ -892,18 +1135,35 @@ export function createApp({
         return transaction(db, () => {
           const row = getTripRow(params.id);
           if (!row || row.captain_id !== user.id) throw new HttpError(404, 'Trip not found');
-          const at = now();
-          saveTransition(
-            row,
-            transitionTrip(rowToTrip(row), status, { by: 'captain', actorId: user.id, at }),
-            status === S.COMPLETED ? at : null,
-          );
+          if (status === S.COMPLETED) {
+            completeTrip(row, 'captain', user.id);
+          } else {
+            saveTransition(row, transitionTrip(rowToTrip(row), status, { by: 'captain', actorId: user.id, at: now() }));
+          }
           return { trip: tripView(getTripRow(row.id), 'captain') };
         });
       },
       { roles: ['captain'] },
     );
   }
+
+  router.add(
+    'POST',
+    '/api/trips/:id/rate-passenger',
+    ({ user, params, body }) => {
+      obj(body);
+      const rating = int(body.rating, 'rating', { min: 1, max: 5 });
+      const row = getTripRow(params.id);
+      if (!row || row.captain_id !== user.id) throw new HttpError(404, 'Trip not found');
+      if (row.status !== S.COMPLETED) throw bad('You can only rate a finished trip');
+      const res = db
+        .prepare('UPDATE trips SET passenger_rating = ? WHERE id = ? AND passenger_rating IS NULL')
+        .run(rating, row.id);
+      if (res.changes !== 1) throw new HttpError(409, 'You already rated this passenger');
+      return { ok: true };
+    },
+    { roles: ['captain'] },
+  );
 
   /** Commission the captain still owes Smart Boda for cash trips. */
   function commissionOwed(captainId) {
@@ -944,6 +1204,9 @@ export function createApp({
         totals: { ...totals },
         byDay: byDay.map((d) => ({ ...d })),
         commissionOwed: commissionOwed(user.id),
+        debtLimit: getLimits(db).captainDebtLimit,
+        walletBalance: wallet.balance(db, user.id),
+        standing: captainStanding(captainCancelCounts(db, now()).get(user.id), now()),
       };
     },
     { roles: ['captain'] },
@@ -984,6 +1247,8 @@ export function createApp({
           trips: r.trips,
           avgRating: r.avg_rating == null ? null : round1(r.avg_rating),
           commissionOwed: commissionOwed(r.id),
+          walletBalance: wallet.balance(db, r.id),
+          standing: captainStanding(captainCancelCounts(db, now()).get(r.id), now()).level,
         })),
       };
     },
@@ -1084,14 +1349,98 @@ export function createApp({
         grossTotal: count("SELECT COALESCE(SUM(fare),0) AS v FROM trips WHERE status = 'completed'"),
         commissionTotal: count("SELECT COALESCE(SUM(commission),0) AS v FROM trips WHERE status = 'completed'"),
         settledTotal: count('SELECT COALESCE(SUM(amount),0) AS v FROM settlements'),
+        walletTotal: count("SELECT COALESCE(SUM(amount),0) AS v FROM wallet_ledger"),
       };
     },
     { roles: ['admin'] },
   );
 
-  router.add('GET', '/api/admin/settings', () => ({ fare: getFareConfig(db), dispatch: getDispatchConfig(db), vehicles: getVehicleConfig(db) }), {
-    roles: ['admin'],
-  });
+  router.add(
+    'GET',
+    '/api/admin/settings',
+    () => ({
+      fare: getFareConfig(db),
+      dispatch: getDispatchConfig(db),
+      vehicles: getVehicleConfig(db),
+      night: getNightConfig(db),
+      limits: getLimits(db),
+    }),
+    { roles: ['admin'] },
+  );
+
+  router.add(
+    'GET',
+    '/api/admin/users',
+    ({ query }) => {
+      const q = `%${String(query.q ?? '').trim().toLowerCase()}%`;
+      const rows = db
+        .prepare(
+          `SELECT id, role, name, phone, email, status FROM users
+           WHERE role <> 'admin' AND (lower(name) LIKE ? OR phone LIKE ? OR lower(COALESCE(email,'')) LIKE ?)
+           ORDER BY created_at DESC LIMIT 30`,
+        )
+        .all(q, q, q);
+      return { users: rows.map((r) => ({ ...r, walletBalance: wallet.balance(db, r.id) })) };
+    },
+    { roles: ['admin'] },
+  );
+
+  // Positive amount adds money to someone's wallet (for example after they paid cash at the office
+  // or by mobile money); negative takes it back.
+  router.add(
+    'POST',
+    '/api/admin/users/:id/wallet',
+    ({ params, body }) => {
+      obj(body);
+      const u = getUser(params.id);
+      if (!u || u.role === 'admin') throw new HttpError(404, 'User not found');
+      const amount = int(body.amount, 'amount', { min: -100_000_000, max: 100_000_000 });
+      if (amount === 0) throw bad('Amount cannot be 0');
+      const note = text(body.note, 'note', { max: 200, optional: true });
+      return transaction(db, () => {
+        if (amount < 0 && wallet.balance(db, u.id) + amount < 0) throw bad('That is more than the wallet holds');
+        wallet.addEntry(db, { userId: u.id, amount, kind: amount > 0 ? 'admin_credit' : 'admin_debit', note, at: now() });
+        return { balance: wallet.balance(db, u.id) };
+      });
+    },
+    { roles: ['admin'] },
+  );
+
+  // Pay a captain the wallet earnings they have built up (the admin sends the money, then records it here).
+  router.add(
+    'POST',
+    '/api/admin/captains/:id/payout',
+    ({ params, body }) => {
+      obj(body);
+      const u = getUser(params.id);
+      if (!u || u.role !== 'captain') throw new HttpError(404, 'Captain not found');
+      const amount = int(body.amount, 'amount', { min: 1, max: 100_000_000 });
+      const note = text(body.note, 'note', { max: 200, optional: true });
+      return transaction(db, () => {
+        if (amount > wallet.balance(db, u.id)) throw bad('That is more than the captain has in the wallet');
+        wallet.addEntry(db, { userId: u.id, amount: -amount, kind: 'payout', note, at: now() });
+        return { balance: wallet.balance(db, u.id) };
+      });
+    },
+    { roles: ['admin'] },
+  );
+
+  router.add(
+    'POST',
+    '/api/admin/users/:id/password',
+    ({ params, body }) => {
+      obj(body);
+      const u = getUser(params.id);
+      if (!u) throw new HttpError(404, 'User not found');
+      const password = text(body.password, 'Password', { min: 6, max: 128 });
+      transaction(db, () => {
+        db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), u.id);
+        db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
+      });
+      return { ok: true };
+    },
+    { roles: ['admin'] },
+  );
   router.add('PUT', '/api/admin/settings', ({ body }) => updateSettings(db, body), { roles: ['admin'] });
 
   // ---------- the HTTP handler ----------

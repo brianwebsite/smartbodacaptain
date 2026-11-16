@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   role TEXT NOT NULL CHECK (role IN ('passenger','captain','admin')),
   name TEXT NOT NULL,
-  phone TEXT NOT NULL UNIQUE,
+  phone TEXT UNIQUE,
   password_hash TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('active','pending','suspended')),
   created_at TEXT NOT NULL
@@ -89,6 +89,25 @@ CREATE TABLE IF NOT EXISTS settlements (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS wallet_ledger (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  amount INTEGER NOT NULL CHECK (amount <> 0),
+  kind TEXT NOT NULL,
+  trip_id TEXT REFERENCES trips(id),
+  note TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS wallet_user ON wallet_ledger(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS wallet_once_per_trip ON wallet_ledger(trip_id, kind, user_id) WHERE trip_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS password_resets (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  expires_at TEXT NOT NULL,
+  used_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -107,6 +126,9 @@ export function openDb(path = ':memory:') {
 
 /** Add columns that older databases do not have yet. */
 function migrate(db) {
+  // Older databases required a phone number. Email-only passengers need it optional.
+  const phoneCol = db.prepare('PRAGMA table_info(users)').all().find((c) => c.name === 'phone');
+  if (phoneCol && phoneCol.notnull === 1) rebuildUsersWithOptionalPhone(db);
   const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
   if (!cols.includes('email')) db.exec('ALTER TABLE users ADD COLUMN email TEXT');
   if (!cols.includes('google_sub')) db.exec('ALTER TABLE users ADD COLUMN google_sub TEXT');
@@ -118,8 +140,46 @@ function migrate(db) {
   addColumn('trips', 'vehicle_type', "TEXT NOT NULL DEFAULT 'boda'");
   addColumn('trips', 'cancel_reason', 'TEXT');
   addColumn('trips', 'cancelled_by', 'TEXT');
+  addColumn('trips', 'kind', "TEXT NOT NULL DEFAULT 'ride'");
+  addColumn('trips', 'delivery_item', 'TEXT');
+  addColumn('trips', 'receiver_name', 'TEXT');
+  addColumn('trips', 'receiver_phone', 'TEXT');
+  addColumn('trips', 'night_percent', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('trips', 'auto_started', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('trips', 'passenger_rating', 'INTEGER');
+  addColumn('trips', 'passenger_rating_comment', 'TEXT');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email) WHERE email IS NOT NULL');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_google_unique ON users(google_sub) WHERE google_sub IS NOT NULL');
+}
+
+function rebuildUsersWithOptionalPhone(db) {
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec('BEGIN');
+    const have = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+    const opt = (c) => (have.includes(c) ? c : 'NULL');
+    db.exec(`CREATE TABLE users_new (
+      id TEXT PRIMARY KEY,
+      role TEXT NOT NULL CHECK (role IN ('passenger','captain','admin')),
+      name TEXT NOT NULL,
+      phone TEXT UNIQUE,
+      password_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('active','pending','suspended')),
+      created_at TEXT NOT NULL,
+      email TEXT,
+      google_sub TEXT
+    )`);
+    db.exec(`INSERT INTO users_new (id, role, name, phone, password_hash, status, created_at, email, google_sub)
+             SELECT id, role, name, phone, password_hash, status, created_at, ${opt('email')}, ${opt('google_sub')} FROM users`);
+    db.exec('DROP TABLE users');
+    db.exec('ALTER TABLE users_new RENAME TO users');
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
 }
 
 /** Run fn inside one all-or-nothing transaction. */

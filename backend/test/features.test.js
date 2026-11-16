@@ -72,7 +72,7 @@ test('estimate gives a price and arrival time for each vehicle type', async () =
   const r = await h.call('POST', '/api/fare/estimate', { pickup: PICKUP, dropoff: DROPOFF }, p.token);
   assert.equal(r.status, 200);
   const by = Object.fromEntries(r.body.options.map((o) => [o.vehicleType, o]));
-  assert.deepEqual(Object.keys(by).sort(), ['boda', 'car', 'electric_boda']);
+  assert.deepEqual(Object.keys(by).sort(), ['boda', 'car', 'car_xl', 'electric_boda']);
   assert.equal(by.boda.nearbyCount, 1);
   assert.ok(by.boda.etaMin >= 1);
   assert.equal(by.electric_boda.nearbyCount, 0);
