@@ -160,8 +160,15 @@ async function overview(body) {
   const s = await api('/api/admin/stats');
   state.pendingCount = s.captainsPending;
   const card = (n, l) => h('div', { class: 'card' }, h('div', { class: 'n' }, n), h('div', { class: 'l' }, l));
+  const ps = await api('/api/admin/payments-status').catch(() => null);
+  const yn = (b) => (b ? 'yes' : 'MISSING');
+  const payBox = ps ? h('div', { class: 'panel', style: 'margin-bottom:12px;padding:12px' },
+    h('strong', {}, ps.topupsOn ? 'Mobile money top-ups are ON' : 'Mobile money top-ups are OFF'),
+    h('div', { class: 'muted' }, 'LIVEPAY_ENABLED=true: ' + yn(ps.settings.enabledFlag) + ' · API key: ' + yn(ps.settings.apiKey) +
+      ' · Account number: ' + yn(ps.settings.accountNumber) + ' · Webhook secret: ' + yn(ps.settings.webhookSecret) + ' · PUBLIC_URL: ' + yn(ps.settings.publicUrl)),
+    ps.webhookUrl ? h('div', { class: 'muted' }, 'Webhook address to give LivePay: ' + ps.webhookUrl) : null) : null;
   body.replaceChildren(
-    h('h2', {}, 'Overview'),
+    h('h2', {}, 'Overview'), payBox,
     h('div', { class: 'cards' },
       card(s.captainsPending, 'Captains waiting for approval'),
       card(s.captainsOnline, 'Captains online now'),
@@ -328,6 +335,19 @@ async function settings(body) {
   const s = await api('/api/admin/settings');
   const status = h('span', { class: 'ok' });
   const field = (label, value, step) => { const i = h('input', { type: 'number', step: step || '1', min: '0', value }); return [h('label', {}, label, i), i]; };
+  const tfield = (label, value, ph) => { const i = h('input', { type: 'text', value: value || '', placeholder: ph || '' }); return [h('label', {}, label, i), i]; };
+  const t = {
+    supportPhone: tfield('Support phone number', s.app.supportPhone, '+2567...'),
+    supportEmail: tfield('Support email', s.app.supportEmail),
+    whatsapp: tfield('WhatsApp link', s.app.whatsapp, 'https://wa.me/2567...'),
+    facebook: tfield('Facebook link', s.app.facebook, 'https://facebook.com/...'),
+    instagram: tfield('Instagram link', s.app.instagram, 'https://instagram.com/...'),
+    x: tfield('X (Twitter) link', s.app.x, 'https://x.com/...'),
+    tiktok: tfield('TikTok link', s.app.tiktok, 'https://tiktok.com/@...'),
+    youtube: tfield('YouTube link', s.app.youtube, 'https://youtube.com/@...'),
+    androidStoreUrl: tfield('Play Store link (for Rate app)', s.app.androidStoreUrl, 'https://play.google.com/store/apps/details?id=...'),
+    about: tfield('About us text', s.app.about),
+  };
   const f = {
     baseFare: field('Base fare (UGX)', s.fare.baseFare), perKm: field('Per kilometre (UGX)', s.fare.perKm),
     perMinute: field('Per minute (UGX)', s.fare.perMinute), minimumFare: field('Minimum fare (UGX)', s.fare.minimumFare),
@@ -345,7 +365,7 @@ async function settings(body) {
     stale: field('Ignore locations older than (seconds)', s.dispatch.staleAfterSeconds), offer: field('Give up finding a captain after (seconds)', s.dispatch.offerSeconds),
   };
   const v = (k) => Number(f[k][1].value);
-  const form = h('form', { class: 'grid' }, Object.values(f).map((x) => x[0]),
+  const form = h('form', { class: 'grid' }, Object.values(f).map((x) => x[0]), h('h3', { style: 'grid-column:1/-1;margin:12px 0 0' }, 'App contact details and social links (shown in the apps under Account)'), Object.values(t).map((x) => x[0]),
     h('div', {}, h('button', { class: 'primary', type: 'submit' }, 'Save settings'), ' ', status));
   form.addEventListener('submit', async (e) => {
     e.preventDefault(); status.className = 'ok'; status.textContent = '';
@@ -355,6 +375,7 @@ async function settings(body) {
         vehicles: { boda: { multiplier: v('mBoda') }, electric_boda: { multiplier: v('mElectric') }, car: { multiplier: v('mCar') }, car_xl: { multiplier: v('mCarXl') } },
         night: { percent: v('nightPct'), startHour: v('nightFrom'), endHour: v('nightTo') },
         limits: { deliveryMultiplier: v('delivery') },
+        app: Object.fromEntries(Object.entries(t).map(([k, x]) => [k, x[1].value.trim()])),
         dispatch: { maxKm: v('maxKm'), limit: v('limit'), staleAfterSeconds: v('stale'), offerSeconds: v('offer') } } });
       status.textContent = 'Saved. New trips use these numbers.';
     } catch (ex) { status.className = 'err'; status.textContent = ex.message; }

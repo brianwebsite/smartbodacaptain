@@ -11,9 +11,12 @@ import 'widgets.dart';
 /// The Smart Boda wallet: balance, what is held for a trip in progress, and every change.
 /// Passengers keep money here to pay trips; captains see what wallet trips earned them.
 class WalletScreen extends StatefulWidget {
-  const WalletScreen({super.key, required this.api, required this.isCaptain, this.embedded = false});
+  const WalletScreen({super.key, required this.api, required this.isCaptain, this.embedded = false, this.phone});
 
   final ApiClient api;
+
+  /// The person's own number, filled in so the payment prompt goes straight to their phone.
+  final String? phone;
   final bool isCaptain;
 
   /// True when shown as a tab (no back arrow).
@@ -54,19 +57,13 @@ class _WalletScreenState extends State<WalletScreen> {
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('Add money'),
-          content: const Text(
-              'Adding money by mobile money is coming soon. Until then, pay cash, or ask Smart Boda to credit your wallet.'),
+          content: const Text('Adding money by mobile money is not switched on yet. Please try again later or contact Smart Boda.'),
           actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
         ),
       );
       return;
     }
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      isDismissible: false,
-      builder: (_) => _TopupSheet(api: widget.api),
-    );
+    await showTopupSheet(context, widget.api, phone: widget.phone);
     await _load();
   }
 
@@ -171,11 +168,29 @@ class _WalletScreenState extends State<WalletScreen> {
   }
 }
 
+/// The number in the form mobile money takes: 07XXXXXXXX.
+String localPhone(String? phone) {
+  if (phone == null) return '';
+  return phone.startsWith('+256') ? '0${phone.substring(4)}' : phone;
+}
+
+/// Opens the top-up sheet. The payment request goes to the phone number given, and the money
+/// is added only after LivePay confirms it.
+Future<void> showTopupSheet(BuildContext context, ApiClient api, {String? phone}) {
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    isDismissible: false,
+    builder: (_) => _TopupSheet(api: api, phone: phone),
+  );
+}
+
 /// Ask for an amount and a mobile money number, then wait while the person approves on their phone.
 class _TopupSheet extends StatefulWidget {
-  const _TopupSheet({required this.api});
+  const _TopupSheet({required this.api, this.phone});
 
   final ApiClient api;
+  final String? phone;
 
   @override
   State<_TopupSheet> createState() => _TopupSheetState();
@@ -183,7 +198,7 @@ class _TopupSheet extends StatefulWidget {
 
 class _TopupSheetState extends State<_TopupSheet> {
   final _amount = TextEditingController(text: '10000');
-  final _phone = TextEditingController();
+  late final _phone = TextEditingController(text: localPhone(widget.phone));
   bool _busy = false;
   bool _waiting = false;
   String? _error;

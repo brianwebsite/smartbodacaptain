@@ -1,7 +1,7 @@
 // Settings the admin can change: fare formula and dispatch rules.
 
 import { DEFAULT_FARE_CONFIG, calculateFare } from './fare.js';
-import { bad, obj, num, int } from './validate.js';
+import { bad, obj, num, int, text } from './validate.js';
 import { DEFAULT_VEHICLES, VEHICLE_TYPES } from './vehicles.js';
 
 export const DEFAULT_DISPATCH = Object.freeze({
@@ -18,9 +18,22 @@ function read(db, key, defaults) {
 
 export const DEFAULT_NIGHT = Object.freeze({ percent: 5, startHour: 22, endHour: 5 });
 export const DEFAULT_LIMITS = Object.freeze({
-  captainDebtLimit: 50000, // a captain who owes more commission than this cannot go online
   deliveryMultiplier: 1, // price level of delivery trips compared with a normal ride
 });
+
+export const DEFAULT_APP = Object.freeze({
+  supportPhone: '',
+  supportEmail: '',
+  whatsapp: '',
+  facebook: '',
+  instagram: '',
+  x: '',
+  tiktok: '',
+  youtube: '',
+  androidStoreUrl: '',
+  about: 'Smart Boda connects you with trusted boda riders and drivers in Kampala.',
+});
+export const getAppInfo = (db) => read(db, 'app', DEFAULT_APP);
 
 export const getFareConfig = (db) => read(db, 'fare', DEFAULT_FARE_CONFIG);
 export const getDispatchConfig = (db) => read(db, 'dispatch', DEFAULT_DISPATCH);
@@ -88,11 +101,25 @@ export function updateSettings(db, body) {
   if (body.limits !== undefined) {
     const l = obj(body.limits, 'limits');
     const next = { ...getLimits(db) };
-    if (l.captainDebtLimit !== undefined) next.captainDebtLimit = int(l.captainDebtLimit, 'captainDebtLimit', { min: 0, max: 10_000_000 });
     if (l.deliveryMultiplier !== undefined) next.deliveryMultiplier = num(l.deliveryMultiplier, 'deliveryMultiplier', { min: 0.5, max: 5 });
     write(db, 'limits', next);
   }
+  if (body.app !== undefined) {
+    const a = obj(body.app, 'app');
+    const next = { ...getAppInfo(db) };
+    for (const k of ['supportPhone', 'supportEmail', 'about']) {
+      if (a[k] !== undefined) next[k] = text(a[k], k, { min: 0, max: k === 'about' ? 600 : 120, optional: true }) ?? '';
+    }
+    for (const k of ['whatsapp', 'facebook', 'instagram', 'x', 'tiktok', 'youtube', 'androidStoreUrl']) {
+      if (a[k] === undefined) continue;
+      const v = text(a[k], k, { min: 0, max: 300, optional: true }) ?? '';
+      if (v && !/^https:\/\/[^\s]+$/i.test(v)) throw bad(`${k} must be a full link starting with https://`);
+      next[k] = v;
+    }
+    write(db, 'app', next);
+  }
   return {
+    app: getAppInfo(db),
     fare: getFareConfig(db),
     dispatch: getDispatchConfig(db),
     vehicles: getVehicleConfig(db),

@@ -80,7 +80,7 @@ The log line `Password reset email: on` confirms it. Without these, the app tell
 Passengers add money to their wallet through LivePay (3% collection fee, which Smart Boda absorbs: the wallet is credited the full amount). Set these on the server (Render: Environment), never in the apps or on GitHub:
 | Variable | Value |
 |---|---|
-| `LIVEPAY_ENABLED` | `true` |
+| `LIVEPAY_ENABLED` | `true` (the admin Overview page shows which of these five the server can see) |
 | `LIVEPAY_API_KEY` | your LivePay API key |
 | `LIVEPAY_ACCOUNT_NUMBER` | your LivePay account number |
 | `LIVEPAY_WEBHOOK_SECRET` | the webhook secret from LivePay |

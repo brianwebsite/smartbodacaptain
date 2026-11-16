@@ -24,6 +24,7 @@ class AppUser {
     required this.status,
     this.phone,
     this.email,
+    this.backupPhone,
     this.bikePlate,
     this.bikeModel,
     this.vehicleType = 'boda',
@@ -40,6 +41,7 @@ class AppUser {
   final String name;
   final String? phone;
   final String? email;
+  final String? backupPhone;
   final String status;
   final String? bikePlate;
   final String? bikeModel;
@@ -64,6 +66,7 @@ class AppUser {
       name: j['name'] as String,
       phone: j['phone'] as String?,
       email: j['email'] as String?,
+      backupPhone: j['backupPhone'] as String?,
       status: j['status'] as String,
       bikePlate: cap?['bikePlate'] as String?,
       bikeModel: cap?['bikeModel'] as String?,

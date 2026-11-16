@@ -1,5 +1,6 @@
 library smartboda_core;
 
+export 'src/account_menu.dart';
 export 'src/api.dart';
 export 'src/auth_screen.dart';
 export 'src/cancel.dart';

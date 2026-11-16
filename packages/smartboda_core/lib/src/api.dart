@@ -36,6 +36,8 @@ class ApiClient {
 
   Future<Map<String, dynamic>> get(String path) => _send('GET', path, null);
 
+  Future<Map<String, dynamic>> put(String path, [Map<String, dynamic>? body]) => _send('PUT', path, body);
+
   Future<Map<String, dynamic>> post(String path, [Map<String, dynamic>? body]) =>
       _send('POST', path, body ?? <String, dynamic>{});
 
@@ -50,7 +52,9 @@ class ApiClient {
     try {
       final Future<http.Response> request = method == 'GET'
           ? _http.get(uri, headers: headers)
-          : _http.post(uri, headers: headers, body: jsonEncode(body));
+          : method == 'PUT'
+              ? _http.put(uri, headers: headers, body: jsonEncode(body))
+              : _http.post(uri, headers: headers, body: jsonEncode(body));
       res = await request.timeout(const Duration(seconds: 20));
     } on TimeoutException {
       throw const ApiException('The server took too long to answer. Check your internet.', code: 'timeout');

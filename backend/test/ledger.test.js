@@ -304,3 +304,25 @@ test('receipts: passenger sees the fare, rider also sees commission; outsiders s
   assert.equal((await h.call('GET', `/api/trips/${t.id}/receipt`, undefined, other.token)).status, 404);
   await h.close();
 });
+
+test('backup number, public app info and the payments status check', async () => {
+  const h = await harness();
+  const pax = await h.passenger();
+  const ok = await h.call('PUT', '/api/me/backup-phone', { phone: '0772000111' }, pax.token);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.user.backupPhone, '+256772000111');
+  assert.equal((await h.call('PUT', '/api/me/backup-phone', { phone: '' }, pax.token)).body.user.backupPhone, null);
+  assert.equal((await h.call('PUT', '/api/me/backup-phone', { phone: 'abc' }, pax.token)).status, 400);
+
+  assert.equal((await h.call('PUT', '/api/admin/settings', { app: { facebook: 'javascript:alert(1)' } }, h.admin)).status, 400);
+  const set = await h.call('PUT', '/api/admin/settings', { app: { supportPhone: '+256700111222', facebook: 'https://facebook.com/smartboda' } }, h.admin);
+  assert.equal(set.status, 200, JSON.stringify(set.body));
+  const info = (await h.call('GET', '/api/app-info')).body.app; // public, no sign-in
+  assert.equal(info.facebook, 'https://facebook.com/smartboda');
+  assert.equal(info.supportPhone, '+256700111222');
+
+  const st = await h.call('GET', '/api/admin/payments-status', undefined, h.admin);
+  assert.equal(st.body.topupsOn, true);
+  assert.equal((await h.call('GET', '/api/admin/payments-status', undefined, pax.token)).status, 403);
+  await h.close();
+});

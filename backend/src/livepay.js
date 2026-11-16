@@ -24,6 +24,8 @@ export function livepayClient({ apiKey, accountNumber, webhookSecret, enabled = 
       if (!res.ok || !d.success) {
         const err = new Error('LivePay refused the request');
         err.refused = true;
+        err.status = res.status;
+        err.detail = String(d.message ?? d.error ?? '').slice(0, 200);
         throw err;
       }
       return { internalReference: d.internal_reference ?? null };

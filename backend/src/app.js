@@ -19,7 +19,7 @@ import {
 } from './auth.js';
 import { Router, readJson, sendJson } from './http.js';
 import {
-  getFareConfig, getDispatchConfig, getVehicleConfig, getNightConfig, getLimits, updateSettings,
+  getFareConfig, getAppInfo, getDispatchConfig, getVehicleConfig, getNightConfig, getLimits, updateSettings,
 } from './settings.js';
 import { nightPercent } from './night.js';
 import * as wallet from './wallet.js';
@@ -48,6 +48,7 @@ export function createApp({
   places = null,
   mailer = null,
   livepay = null,
+  livepayStatus = null,
   publicUrl = null,
 }) {
   const router = new Router();
@@ -581,7 +582,7 @@ export function createApp({
   // ---------- routes: any signed-in user ----------
 
   function meView(u) {
-    const view = { id: u.id, role: u.role, name: u.name, phone: u.phone, email: u.email ?? null, status: u.status };
+    const view = { id: u.id, role: u.role, name: u.name, phone: u.phone, email: u.email ?? null, status: u.status, backupPhone: u.backup_phone ?? null };
     if (u.role === 'passenger') {
       view.wallet = { balance: wallet.balance(db, u.id), available: wallet.available(db, u.id) };
       view.standing = passengerStanding(passengerCancelCount(db, u.id, now()), now());
@@ -603,6 +604,36 @@ export function createApp({
   }
 
   router.add('GET', '/api/me', ({ user }) => ({ user: meView(user) }), { roles: ['passenger', 'captain', 'admin'] });
+
+  // A second number Smart Boda can reach the person on, for example a relative.
+  router.add(
+    'PUT',
+    '/api/me/backup-phone',
+    ({ user, body }) => {
+      obj(body);
+      const empty = body.phone == null || String(body.phone).trim() === '';
+      const phone = empty ? null : parsePhone(body.phone);
+      if (phone && phone === user.phone) throw bad('Use a different number from your main one');
+      db.prepare('UPDATE users SET backup_phone = ? WHERE id = ?').run(phone, user.id);
+      return { user: meView(getUser(user.id)) };
+    },
+    { roles: ['passenger', 'captain'] },
+  );
+
+  // Contact details and social links, set by the admin. Public so the apps can show them.
+  router.add('GET', '/api/app-info', () => ({ app: getAppInfo(db) }));
+
+  // Which LivePay settings the server can see (yes or no only, never the values).
+  router.add(
+    'GET',
+    '/api/admin/payments-status',
+    () => ({
+      topupsOn: Boolean(livepay),
+      settings: livepayStatus ?? { enabledFlag: Boolean(livepay), apiKey: Boolean(livepay), accountNumber: Boolean(livepay), webhookSecret: Boolean(livepay?.hasWebhookSecret), publicUrl: Boolean(publicUrl) },
+      webhookUrl: publicUrl ? `${publicUrl}/api/livepay-webhook` : null,
+    }),
+    { roles: ['admin'] },
+  );
 
   router.add(
     'POST',
@@ -968,7 +999,7 @@ export function createApp({
       if (!livepay) {
         throw new HttpError(
           503,
-          'Adding money by mobile money is coming soon. Until then, pay cash or ask Smart Boda to credit your wallet.',
+          'Adding money by mobile money is not switched on yet. Please try again later or contact Smart Boda.',
           'topup_unavailable',
         );
       }
@@ -989,6 +1020,7 @@ export function createApp({
         db.prepare('UPDATE topups SET internal_reference = ? WHERE id = ?').run(r.internalReference, id);
       } catch (err) {
         if (err.refused) {
+          console.error(`LivePay refused a collect request: HTTP ${err.status} ${err.detail ?? ''}`);
           db.prepare("UPDATE topups SET status = 'failed' WHERE id = ?").run(id);
           throw new HttpError(502, 'The payment request could not be sent. Please try again.', 'topup_failed');
         }
@@ -1514,6 +1546,7 @@ export function createApp({
       vehicles: getVehicleConfig(db),
       night: getNightConfig(db),
       limits: getLimits(db),
+      app: getAppInfo(db),
     }),
     { roles: ['admin'] },
   );

@@ -38,16 +38,24 @@ const mailer = brevoMailer({ apiKey: process.env.BREVO_API_KEY?.trim(), from: pr
 console.log(`Password reset email: ${mailer ? 'on' : 'off'}`);
 
 const livepay = livepayClient({
-  enabled: process.env.LIVEPAY_ENABLED === 'true',
+  enabled: /^(true|1|yes|on)$/i.test(process.env.LIVEPAY_ENABLED?.trim() ?? ''),
   apiKey: process.env.LIVEPAY_API_KEY?.trim(),
   accountNumber: process.env.LIVEPAY_ACCOUNT_NUMBER?.trim(),
   webhookSecret: process.env.LIVEPAY_WEBHOOK_SECRET?.trim(),
 });
-console.log(`LivePay top-ups: ${livepay ? 'on' : 'off'}`);
+const livepayStatus = {
+  enabledFlag: /^(true|1|yes|on)$/i.test(process.env.LIVEPAY_ENABLED?.trim() ?? ''),
+  apiKey: Boolean(process.env.LIVEPAY_API_KEY?.trim()),
+  accountNumber: Boolean(process.env.LIVEPAY_ACCOUNT_NUMBER?.trim()),
+  webhookSecret: Boolean(process.env.LIVEPAY_WEBHOOK_SECRET?.trim()),
+  publicUrl: Boolean(process.env.PUBLIC_URL?.trim()),
+};
+console.log(`LivePay top-ups: ${livepay ? 'on' : 'off'}`, JSON.stringify(livepayStatus));
 
 const { server } = createApp({
   mailer,
   livepay,
+  livepayStatus,
   publicUrl: process.env.PUBLIC_URL?.trim().replace(/\/+$/, '') || null,
   db,
   routing,
