@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
@@ -275,14 +274,32 @@ class _AboutScreenState extends State<AboutScreen> {
     });
   }
 
-  static const _icons = <String, (IconData, Color, String)>{
-    'whatsapp': (FontAwesomeIcons.whatsapp, Color(0xFF25D366), 'WhatsApp'),
-    'facebook': (FontAwesomeIcons.facebook, Color(0xFF1877F2), 'Facebook'),
-    'instagram': (FontAwesomeIcons.instagram, Color(0xFFE4405F), 'Instagram'),
-    'x': (FontAwesomeIcons.xTwitter, Color(0xFF111111), 'X'),
-    'tiktok': (FontAwesomeIcons.tiktok, Color(0xFF111111), 'TikTok'),
-    'youtube': (FontAwesomeIcons.youtube, Color(0xFFFF0000), 'YouTube'),
+  // Brand-coloured badges. A letter or a plain icon stands for each network.
+  static const _badges = <String, (Color, String)>{
+    'whatsapp': (Color(0xFF25D366), 'WhatsApp'),
+    'facebook': (Color(0xFF1877F2), 'Facebook'),
+    'instagram': (Color(0xFFE4405F), 'Instagram'),
+    'x': (Color(0xFF111111), 'X'),
+    'tiktok': (Color(0xFF111111), 'TikTok'),
+    'youtube': (Color(0xFFFF0000), 'YouTube'),
   };
+
+  Widget _glyph(String key) {
+    switch (key) {
+      case 'whatsapp':
+        return const Icon(Icons.chat, color: Colors.white, size: 26);
+      case 'facebook':
+        return const Icon(Icons.facebook, color: Colors.white, size: 30);
+      case 'instagram':
+        return const Icon(Icons.camera_alt_outlined, color: Colors.white, size: 26);
+      case 'tiktok':
+        return const Icon(Icons.music_note, color: Colors.white, size: 26);
+      case 'youtube':
+        return const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 32);
+      default:
+        return const Text('X', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -309,16 +326,16 @@ class _AboutScreenState extends State<AboutScreen> {
                     runSpacing: 16,
                     children: [
                       for (final e in info.links.entries)
-                        if (_icons[e.key] != null)
+                        if (_badges[e.key] != null)
                           Tooltip(
-                            message: _icons[e.key]!.$3,
+                            message: _badges[e.key]!.$2,
                             child: InkWell(
                               onTap: () => _open(context, e.value),
                               borderRadius: BorderRadius.circular(30),
                               child: CircleAvatar(
                                 radius: 28,
-                                backgroundColor: _icons[e.key]!.$2,
-                                child: Icon(_icons[e.key]!.$1, color: Colors.white, size: 26),
+                                backgroundColor: _badges[e.key]!.$1,
+                                child: _glyph(e.key),
                               ),
                             ),
                           ),
@@ -372,7 +389,7 @@ class _ContactScreenState extends State<ContactScreen> {
                 if (info.links['whatsapp'] != null)
                   Card(
                     child: ListTile(
-                      leading: const FaIcon(FontAwesomeIcons.whatsapp, color: Color(0xFF25D366)),
+                      leading: const Icon(Icons.chat, color: Color(0xFF25D366)),
                       title: const Text('Chat on WhatsApp'),
                       onTap: () => _open(context, info.links['whatsapp']!),
                     ),
