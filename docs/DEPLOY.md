@@ -56,3 +56,6 @@ Render's free plan has no permanent disk: data is wiped when the service restart
    - Type **Android**, package name `ug.smartboda.passenger`, SHA-1 = the fingerprint of `android-debug/debug.keystore` (printed by `keytool -list -v -keystore android-debug/debug.keystore -storepass android`).
 3. Set `GOOGLE_CLIENT_ID` on the server and restart it. The "Continue with Google" button appears by itself when the server has it.
 4. While the consent screen is in "Testing", only the test users you list can sign in. Publish it when you are ready.
+
+## If the admin cannot sign in
+Open the server's log (on Render: your service > Logs) and find the lines starting with `Admin:`. They say exactly what the server saw, for example "ADMIN_PASSWORD must be at least 10 characters" or "the phone ... already belongs to a passenger account". Fix the setting and redeploy. The server repairs the admin account from `ADMIN_PHONE` and `ADMIN_PASSWORD` on every start, so changing the password there is how you reset it. Sign in on `/admin` with the same phone number and password, typed exactly as in the settings (no quote marks).
