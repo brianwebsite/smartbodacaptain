@@ -7,6 +7,7 @@ on:
       - "apps/**"
       - "packages/**"
       - "scripts/prepare_android.py"
+      - "android-debug/**"
       - ".github/workflows/android.yml"
   pull_request:
     paths:
@@ -54,6 +55,11 @@ jobs:
         run: |
           flutter pub get
           flutter analyze --no-fatal-infos
+
+      - name: Use the stable test signing key
+        run: |
+          mkdir -p ~/.android
+          cp android-debug/debug.keystore ~/.android/debug.keystore
 
       - name: Generate Android project
         run: python3 scripts/prepare_android.py apps/${{ matrix.app }} ${{ matrix.app }} "${{ matrix.label }}" "$API_BASE_URL"

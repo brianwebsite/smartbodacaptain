@@ -91,7 +91,17 @@ export function openDb(path = ':memory:') {
   db.exec('PRAGMA busy_timeout = 5000');
   if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+/** Add columns that older databases do not have yet. */
+function migrate(db) {
+  const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  if (!cols.includes('email')) db.exec('ALTER TABLE users ADD COLUMN email TEXT');
+  if (!cols.includes('google_sub')) db.exec('ALTER TABLE users ADD COLUMN google_sub TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email) WHERE email IS NOT NULL');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_google_unique ON users(google_sub) WHERE google_sub IS NOT NULL');
 }
 
 /** Run fn inside one all-or-nothing transaction. */

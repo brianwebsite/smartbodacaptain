@@ -1,10 +1,55 @@
 import 'package:flutter/material.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 import 'api.dart';
 import 'session.dart';
 import 'theme.dart';
 
-/// Sign in / create account. Captains get extra fields (bike, ID, permit).
+enum _Stage { welcome, method, questions }
+
+enum _Mode { signUp, signIn }
+
+enum _Method { google, email, phone }
+
+/// One thing to ask on one screen.
+class _Q {
+  const _Q({
+    required this.id,
+    required this.title,
+    required this.label,
+    this.hint,
+    this.type,
+    this.secret = false,
+    this.optional = false,
+    this.cap = TextCapitalization.none,
+    this.minLength = 1,
+    this.isEmail = false,
+  });
+
+  final String id;
+  final String title;
+  final String label;
+  final String? hint;
+  final TextInputType? type;
+  final bool secret;
+  final bool optional;
+  final TextCapitalization cap;
+  final int minLength;
+  final bool isEmail;
+
+  String? check(String value) {
+    final v = value.trim();
+    if (v.isEmpty) return optional ? null : 'Please answer this to continue';
+    if (isEmail && !RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$').hasMatch(v)) {
+      return 'That does not look like an email address';
+    }
+    if (v.length < minLength && !secret) return 'That looks too short';
+    if (secret && value.length < minLength) return 'Use at least $minLength characters';
+    return null;
+  }
+}
+
+/// Welcome, then one question at a time until the person is signed in.
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key, required this.session, required this.appTitle});
 
@@ -16,56 +61,222 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen> {
-  final _form = GlobalKey<FormState>();
-  bool _register = false;
+  _Stage _stage = _Stage.welcome;
+  _Mode _mode = _Mode.signUp;
+  _Method _method = _Method.phone;
+
+  List<_Q> _questions = const [];
+  int _index = 0;
+  final Map<String, TextEditingController> _controllers = {};
+  bool _hideSecret = true;
   bool _busy = false;
-  bool _hide = true;
   String? _error;
 
-  final _name = TextEditingController();
-  final _phone = TextEditingController();
-  final _password = TextEditingController();
-  final _plate = TextEditingController();
-  final _model = TextEditingController();
-  final _nationalId = TextEditingController();
-  final _permit = TextEditingController();
-  final _stage = TextEditingController();
+  String? _googleClientId;
+  String? _googleIdToken;
+  String _googleName = '';
 
   bool get _isCaptain => widget.session.role == 'captain';
+  bool get _googleAvailable => !_isCaptain && _googleClientId != null;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!_isCaptain) {
+      widget.session.googleServerClientId().then((id) {
+        if (mounted) setState(() => _googleClientId = id);
+      });
+    }
+  }
 
   @override
   void dispose() {
-    for (final c in [_name, _phone, _password, _plate, _model, _nationalId, _permit, _stage]) {
+    for (final c in _controllers.values) {
       c.dispose();
     }
     super.dispose();
   }
 
-  String? _required(String? v, [int min = 1]) =>
-      (v == null || v.trim().length < min) ? 'Required' : null;
+  TextEditingController _controller(String id) =>
+      _controllers.putIfAbsent(id, () => TextEditingController());
 
-  Future<void> _submit() async {
-    if (!_form.currentState!.validate()) return;
+  String _answer(String id) => _controller(id).text.trim();
+
+  // ---------- the questions for each path ----------
+
+  _Q _nameQ() => const _Q(
+        id: 'name',
+        title: 'What is your name?',
+        hint: 'Your first and last name.',
+        label: 'Full name',
+        cap: TextCapitalization.words,
+        minLength: 2,
+      );
+
+  _Q _phoneQ(String id, {String? title, String? hint}) => _Q(
+        id: id,
+        title: title ?? 'What is your phone number?',
+        hint: hint,
+        label: 'Phone number (0772 123456)',
+        type: TextInputType.phone,
+        minLength: 9,
+      );
+
+  _Q _emailQ(String id, {String? title}) => _Q(
+        id: id,
+        title: title ?? 'What is your email address?',
+        label: 'Email',
+        type: TextInputType.emailAddress,
+        isEmail: true,
+      );
+
+  List<_Q> _buildQuestions() {
+    if (_mode == _Mode.signIn) {
+      return [
+        _method == _Method.email ? _emailQ('identifier') : _phoneQ('identifier'),
+        const _Q(id: 'password', title: 'Enter your password', label: 'Password', secret: true, minLength: 1),
+      ];
+    }
+    if (_method == _Method.google) {
+      return [
+        if (_googleName.trim().length < 2) _nameQ(),
+        _phoneQ('phone', hint: 'Captains use it to reach you about your ride.'),
+      ];
+    }
+    return [
+      _nameQ(),
+      if (_method == _Method.email) _emailQ('email'),
+      _phoneQ('phone',
+          hint: _isCaptain
+              ? 'Passengers and Smart Boda use it to reach you.'
+              : 'Captains use it to reach you about your ride.'),
+      const _Q(
+        id: 'password',
+        title: 'Choose a password',
+        hint: 'At least 6 characters. You will use it to sign in.',
+        label: 'Password',
+        secret: true,
+        minLength: 6,
+      ),
+      if (_isCaptain) ..._captainQuestions(),
+    ];
+  }
+
+  List<_Q> _captainQuestions() => const [
+        _Q(
+          id: 'bikePlate',
+          title: 'What is your bike number plate?',
+          label: 'Number plate (UBA 123X)',
+          cap: TextCapitalization.characters,
+          minLength: 3,
+        ),
+        _Q(
+          id: 'bikeModel',
+          title: 'What kind of bike is it?',
+          hint: 'For example Bajaj Boxer. You can skip this.',
+          label: 'Bike model',
+          optional: true,
+        ),
+        _Q(
+          id: 'nationalId',
+          title: 'What is your National ID number?',
+          hint: 'We check it before you can take trips.',
+          label: 'National ID number',
+          cap: TextCapitalization.characters,
+          minLength: 8,
+        ),
+        _Q(
+          id: 'permitNumber',
+          title: 'What is your driving permit number?',
+          label: 'Driving permit number',
+          cap: TextCapitalization.characters,
+          minLength: 4,
+        ),
+        _Q(
+          id: 'stageName',
+          title: 'Which stage do you work from?',
+          hint: 'You can skip this.',
+          label: 'Stage name',
+          optional: true,
+        ),
+      ];
+
+  // ---------- navigation ----------
+
+  void _go(_Mode mode) => setState(() {
+        _mode = mode;
+        _stage = _Stage.method;
+        _error = null;
+      });
+
+  void _chooseMethod(_Method m) {
+    setState(() {
+      _method = m;
+      _questions = _buildQuestions();
+      _index = 0;
+      _stage = _Stage.questions;
+      _error = null;
+    });
+  }
+
+  void _back() {
+    if (_busy) return;
+    setState(() {
+      _error = null;
+      if (_stage == _Stage.questions) {
+        if (_index > 0) {
+          _index--;
+        } else {
+          _stage = _Stage.method;
+        }
+      } else if (_stage == _Stage.method) {
+        _stage = _Stage.welcome;
+      }
+    });
+  }
+
+  // ---------- actions ----------
+
+  Future<void> _next() async {
+    final q = _questions[_index];
+    final problem = q.check(_controller(q.id).text);
+    if (problem != null) {
+      setState(() => _error = problem);
+      return;
+    }
+    setState(() => _error = null);
+    if (_index < _questions.length - 1) {
+      setState(() => _index++);
+      return;
+    }
+    await _finish();
+  }
+
+  Future<void> _finish() async {
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      if (_register) {
+      if (_mode == _Mode.signIn) {
+        await widget.session.login(_answer('identifier'), _controller('password').text);
+      } else if (_method == _Method.google) {
+        final name = _googleName.trim().length >= 2 ? _googleName.trim() : _answer('name');
+        await widget.session.googleSignIn(_googleIdToken!, phone: _answer('phone'), name: name);
+      } else {
         await widget.session.register({
-          'name': _name.text.trim(),
-          'phone': _phone.text.trim(),
-          'password': _password.text,
+          'name': _answer('name'),
+          'phone': _answer('phone'),
+          'password': _controller('password').text,
+          if (_method == _Method.email) 'email': _answer('email'),
           if (_isCaptain) ...{
-            'bikePlate': _plate.text.trim(),
-            'bikeModel': _model.text.trim(),
-            'nationalId': _nationalId.text.trim(),
-            'permitNumber': _permit.text.trim(),
-            'stageName': _stage.text.trim(),
+            'bikePlate': _answer('bikePlate'),
+            'bikeModel': _answer('bikeModel'),
+            'nationalId': _answer('nationalId'),
+            'permitNumber': _answer('permitNumber'),
+            'stageName': _answer('stageName'),
           },
         });
-      } else {
-        await widget.session.login(_phone.text.trim(), _password.text);
       }
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
@@ -74,112 +285,228 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  Widget _field(TextEditingController c, String label,
-      {TextInputType? type, String? Function(String?)? validator, TextCapitalization cap = TextCapitalization.none}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextFormField(
-        controller: c,
-        keyboardType: type,
-        textCapitalization: cap,
-        decoration: InputDecoration(labelText: label),
-        validator: validator,
-        enabled: !_busy,
+  Future<void> _google() async {
+    final clientId = _googleClientId;
+    if (clientId == null) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final gs = GoogleSignIn(scopes: const ['email'], serverClientId: clientId);
+      await gs.signOut();
+      final account = await gs.signIn();
+      if (account == null) return; // the person closed the Google window
+      final token = (await account.authentication).idToken;
+      if (token == null) {
+        throw const ApiException('Google did not give us a sign-in. Please try again.');
+      }
+      final more = await widget.session.googleSignIn(token);
+      if (more != null && mounted) {
+        _googleIdToken = token;
+        _googleName = (more['name'] as String?) ?? '';
+        _mode = _Mode.signUp;
+        _chooseMethod(_Method.google);
+      }
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (_) {
+      if (mounted) setState(() => _error = 'Google sign-in is not available right now. Use email or phone instead.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  // ---------- screens ----------
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: _stage == _Stage.welcome,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _back();
+      },
+      child: Scaffold(
+        body: SafeArea(
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 220),
+            child: KeyedSubtree(
+              key: ValueKey('${_stage.name}-${_stage == _Stage.questions ? _questions[_index].id : ''}'),
+              child: switch (_stage) {
+                _Stage.welcome => _welcome(context),
+                _Stage.method => _methodScreen(context),
+                _Stage.questions => _questionScreen(context),
+              },
+            ),
+          ),
+        ),
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 440),
-              child: Form(
-                key: _form,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Icon(Icons.two_wheeler, size: 64, color: bodaGreen),
-                    const SizedBox(height: 8),
-                    Text(widget.appTitle,
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context)
-                            .textTheme
-                            .headlineMedium
-                            ?.copyWith(fontWeight: FontWeight.bold, color: bodaGreen)),
-                    const SizedBox(height: 4),
-                    Text(_register ? 'Create your account' : 'Sign in to continue',
-                        textAlign: TextAlign.center),
-                    const SizedBox(height: 24),
-                    if (_register) _field(_name, 'Full name', cap: TextCapitalization.words, validator: (v) => _required(v, 2)),
-                    _field(_phone, 'Phone number (0772 123456)',
-                        type: TextInputType.phone, validator: (v) => _required(v, 9)),
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: TextFormField(
-                        controller: _password,
-                        obscureText: _hide,
-                        enabled: !_busy,
-                        decoration: InputDecoration(
-                          labelText: 'Password',
-                          helperText: _register ? 'At least 6 characters' : null,
-                          suffixIcon: IconButton(
-                            icon: Icon(_hide ? Icons.visibility : Icons.visibility_off),
-                            onPressed: () => setState(() => _hide = !_hide),
-                          ),
-                        ),
-                        validator: (v) => (v == null || v.length < 6) ? 'At least 6 characters' : null,
+  Widget _frame({required Widget child, bool back = true, double? progress}) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 460),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  if (back)
+                    IconButton(
+                      onPressed: _busy ? null : _back,
+                      icon: const Icon(Icons.arrow_back),
+                      tooltip: 'Back',
+                    )
+                  else
+                    const SizedBox(height: 48),
+                  if (progress != null)
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 12),
+                        child: LinearProgressIndicator(value: progress, minHeight: 6, borderRadius: BorderRadius.circular(3)),
                       ),
                     ),
-                    if (_register && _isCaptain) ...[
-                      const Divider(height: 28),
-                      const Text('Your bike and documents',
-                          style: TextStyle(fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 4),
-                      const Text('We check these before you can take trips.'),
-                      const SizedBox(height: 12),
-                      _field(_plate, 'Number plate (UBA 123X)',
-                          cap: TextCapitalization.characters, validator: (v) => _required(v, 3)),
-                      _field(_model, 'Bike model (optional)'),
-                      _field(_nationalId, 'National ID number',
-                          cap: TextCapitalization.characters, validator: (v) => _required(v, 8)),
-                      _field(_permit, 'Driving permit number',
-                          cap: TextCapitalization.characters, validator: (v) => _required(v, 4)),
-                      _field(_stage, 'Stage name (optional)'),
-                    ],
-                    if (_error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-                      ),
-                    FilledButton(
-                      onPressed: _busy ? null : _submit,
-                      child: _busy
-                          ? const SizedBox(
-                              height: 22,
-                              width: 22,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                          : Text(_register ? 'Create account' : 'Sign in'),
-                    ),
-                    TextButton(
-                      onPressed: _busy
-                          ? null
-                          : () => setState(() {
-                                _register = !_register;
-                                _error = null;
-                              }),
-                      child: Text(_register ? 'I already have an account' : 'New here? Create an account'),
-                    ),
-                  ],
-                ),
+                ],
               ),
-            ),
+              Expanded(child: child),
+            ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _welcome(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    return _frame(
+      back: false,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Spacer(),
+          const Icon(Icons.two_wheeler, size: 88, color: bodaGreen),
+          const SizedBox(height: 16),
+          Text('Welcome to\n${widget.appTitle}',
+              textAlign: TextAlign.center,
+              style: t.headlineLarge?.copyWith(fontWeight: FontWeight.bold, color: bodaGreen)),
+          const SizedBox(height: 12),
+          Text(
+            _isCaptain ? 'Get trip requests and keep your earnings.' : 'Safe, fair boda rides at the tap of a button.',
+            textAlign: TextAlign.center,
+            style: t.bodyLarge,
+          ),
+          const Spacer(),
+          FilledButton(onPressed: () => _go(_Mode.signUp), child: const Text('Create an account')),
+          const SizedBox(height: 12),
+          OutlinedButton(onPressed: () => _go(_Mode.signIn), child: const Text('I already have an account')),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  Widget _methodScreen(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final up = _mode == _Mode.signUp;
+    return _frame(
+      child: ListView(
+        children: [
+          const SizedBox(height: 24),
+          Text(up ? 'How would you like to sign up?' : 'How would you like to sign in?',
+              style: t.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 24),
+          if (_googleAvailable) ...[
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _google,
+              icon: const Icon(Icons.g_mobiledata, size: 32),
+              label: const Text('Continue with Google'),
+            ),
+            const SizedBox(height: 12),
+          ],
+          OutlinedButton.icon(
+            onPressed: _busy ? null : () => _chooseMethod(_Method.email),
+            icon: const Icon(Icons.email_outlined),
+            label: const Text('Use my email'),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _busy ? null : () => _chooseMethod(_Method.phone),
+            icon: const Icon(Icons.phone_outlined),
+            label: const Text('Use my phone number'),
+          ),
+          if (_busy) const Padding(padding: EdgeInsets.only(top: 24), child: LinearProgressIndicator()),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 16),
+              child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _questionScreen(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final q = _questions[_index];
+    final last = _index == _questions.length - 1;
+    final c = _controller(q.id);
+    final action = last ? (_mode == _Mode.signIn ? 'Sign in' : 'Create account') : 'Continue';
+    return _frame(
+      progress: (_index + 1) / _questions.length,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: ListView(
+              children: [
+                const SizedBox(height: 24),
+                Text(q.title, style: t.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+                if (q.hint != null) ...[
+                  const SizedBox(height: 8),
+                  Text(q.hint!, style: t.bodyMedium),
+                ],
+                const SizedBox(height: 24),
+                TextField(
+                  controller: c,
+                  autofocus: true,
+                  enabled: !_busy,
+                  obscureText: q.secret && _hideSecret,
+                  keyboardType: q.type,
+                  textCapitalization: q.cap,
+                  autocorrect: !(q.secret || q.isEmail),
+                  enableSuggestions: !q.secret,
+                  textInputAction: last ? TextInputAction.done : TextInputAction.next,
+                  onSubmitted: (_) => _busy ? null : _next(),
+                  onChanged: (_) => setState(() => _error = null),
+                  decoration: InputDecoration(
+                    labelText: q.label + (q.optional ? ' (optional)' : ''),
+                    suffixIcon: q.secret
+                        ? IconButton(
+                            icon: Icon(_hideSecret ? Icons.visibility : Icons.visibility_off),
+                            onPressed: () => setState(() => _hideSecret = !_hideSecret),
+                          )
+                        : null,
+                  ),
+                ),
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  ),
+              ],
+            ),
+          ),
+          FilledButton(
+            onPressed: _busy ? null : _next,
+            child: _busy
+                ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : Text(q.optional && c.text.trim().isEmpty && !last ? 'Skip' : action),
+          ),
+        ],
       ),
     );
   }

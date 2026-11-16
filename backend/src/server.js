@@ -5,6 +5,7 @@
 //   GOOGLE_MAPS_API_KEY  optional. Without it fares use a labelled distance estimate.
 //   ADMIN_PHONE, ADMIN_PASSWORD, ADMIN_NAME
 //                        creates the first admin account if no admin exists yet
+//   GOOGLE_CLIENT_ID     optional. The "Web" OAuth client ID; turns on Google sign-in for passengers.
 //   TRUST_PROXY          set to 1 when behind Caddy or another proxy
 
 import { mkdirSync } from 'node:fs';
@@ -16,6 +17,7 @@ import { createApp } from './app.js';
 import { chooseRouting } from './routing.js';
 import { hashPassword } from './auth.js';
 import { normalizeUgPhone } from './phone.js';
+import { googleVerifier } from './google.js';
 
 const port = Number.parseInt(process.env.PORT ?? '8080', 10);
 const dbPath = process.env.DB_PATH ?? './data/smartboda.db';
@@ -43,9 +45,14 @@ ensureAdmin();
 const routing = chooseRouting({ apiKey: process.env.GOOGLE_MAPS_API_KEY });
 console.log(`Routing: ${routing.name}`);
 
+const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim() || null;
+console.log(`Google sign-in: ${googleClientId ? 'on' : 'off'}`);
+
 const { server } = createApp({
   db,
   routing,
+  googleClientId,
+  googleVerify: googleClientId ? googleVerifier([googleClientId]) : null,
   trustProxy: process.env.TRUST_PROXY === '1',
   adminHtmlPath: new URL('../../admin/index.html', import.meta.url),
 });

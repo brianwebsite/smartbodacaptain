@@ -34,6 +34,8 @@ export function createApp({
   now = () => new Date().toISOString(),
   trustProxy = false,
   adminHtmlPath = null,
+  googleVerify = null,
+  googleClientId = null,
 }) {
   const router = new Router();
   const loginByPhone = new RateLimiter(10, 15 * 60 * 1000);
@@ -204,40 +206,47 @@ export function createApp({
 
   router.add('GET', '/health', () => ({ ok: true, time: now() }));
 
-  router.add('POST', '/api/auth/register', ({ body, ip }) => {
-    if (!registerByIp.allow(ip, Date.parse(now()))) {
-      throw new HttpError(429, 'Too many sign-ups from this connection. Try again later.', 'rate_limited');
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+  function parseEmail(value, optional = true) {
+    if (value == null || value === '') {
+      if (optional) return null;
+      throw bad('Enter your email address', 'bad_email');
     }
-    obj(body);
-    const role = oneOf(body.role, 'role', ['passenger', 'captain']);
-    const name = text(body.name, 'Name', { min: 2, max: 80 });
-    let phone;
+    const e = String(value).trim().toLowerCase();
+    if (e.length > 120 || !EMAIL_RE.test(e)) throw bad('Enter a valid email address', 'bad_email');
+    return e;
+  }
+
+  function parsePhone(value) {
     try {
-      phone = normalizeUgPhone(String(body.phone ?? ''));
+      return normalizeUgPhone(String(value ?? ''));
     } catch {
       throw bad('Enter a valid Uganda mobile number, like 0772 123456', 'bad_phone');
     }
-    const password = text(body.password, 'Password', { min: 6, max: 128 });
+  }
 
-    let profile = null;
-    if (role === 'captain') {
-      profile = {
-        bikePlate: text(body.bikePlate, 'Number plate', { min: 3, max: 15 }).toUpperCase().replace(/\s+/g, ' '),
-        bikeModel: text(body.bikeModel, 'Bike model', { max: 40, optional: true }),
-        nationalId: text(body.nationalId, 'National ID number', { min: 8, max: 20 }).toUpperCase(),
-        permitNumber: text(body.permitNumber, 'Driving permit number', { min: 4, max: 30 }).toUpperCase(),
-        stageName: text(body.stageName, 'Stage name', { max: 60, optional: true }),
-      };
-    }
+  function parseCaptainProfile(body) {
+    return {
+      bikePlate: text(body.bikePlate, 'Number plate', { min: 3, max: 15 }).toUpperCase().replace(/\s+/g, ' '),
+      bikeModel: text(body.bikeModel, 'Bike model', { max: 40, optional: true }),
+      nationalId: text(body.nationalId, 'National ID number', { min: 8, max: 20 }).toUpperCase(),
+      permitNumber: text(body.permitNumber, 'Driving permit number', { min: 4, max: 30 }).toUpperCase(),
+      stageName: text(body.stageName, 'Stage name', { max: 60, optional: true }),
+    };
+  }
 
+  /** Creates the account and a first session. Throws friendly 409s for duplicates. */
+  function createAccount({ role, name, phone, email, passwordHash, googleSub = null, profile }) {
     const id = randomUUID();
     const at = now();
     const { token, tokenHash } = newSessionToken();
     try {
       transaction(db, () => {
         db.prepare(
-          'INSERT INTO users (id, role, name, phone, password_hash, status, created_at) VALUES (?,?,?,?,?,?,?)',
-        ).run(id, role, name, phone, hashPassword(password), role === 'captain' ? 'pending' : 'active', at);
+          `INSERT INTO users (id, role, name, phone, email, google_sub, password_hash, status, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`,
+        ).run(id, role, name, phone, email, googleSub, passwordHash, role === 'captain' ? 'pending' : 'active', at);
         if (profile) {
           db.prepare(
             `INSERT INTO captain_profiles (user_id, bike_plate, bike_model, national_id, permit_number, stage_name)
@@ -245,54 +254,132 @@ export function createApp({
           ).run(id, profile.bikePlate, profile.bikeModel, profile.nationalId, profile.permitNumber, profile.stageName);
         }
         db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?,?,?,?)').run(
-          tokenHash,
-          id,
-          at,
-          sessionExpiry(at),
+          tokenHash, id, at, sessionExpiry(at),
         );
       });
     } catch (err) {
-      if (String(err.message).includes('UNIQUE')) {
+      const m = String(err.message);
+      if (m.includes('users.email')) {
+        throw new HttpError(409, 'That email already has an account. Sign in instead.', 'email_taken');
+      }
+      if (m.includes('users.google_sub')) {
+        throw new HttpError(409, 'That Google account already has an account. Sign in instead.', 'google_taken');
+      }
+      if (m.includes('UNIQUE')) {
         throw new HttpError(409, 'That phone number already has an account. Sign in instead.', 'phone_taken');
       }
       throw err;
     }
     return { status: 201, body: { token, user: meView(getUser(id)) } };
+  }
+
+  function startSession(user) {
+    const at = now();
+    const { token, tokenHash } = newSessionToken();
+    db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?,?,?,?)').run(
+      tokenHash, user.id, at, sessionExpiry(at),
+    );
+    return { token, user: meView(user) };
+  }
+
+  router.add('GET', '/api/auth/options', () => ({
+    google: googleVerify && googleClientId ? { serverClientId: googleClientId } : null,
+  }));
+
+  router.add('POST', '/api/auth/register', ({ body, ip }) => {
+    if (!registerByIp.allow(ip, Date.parse(now()))) {
+      throw new HttpError(429, 'Too many sign-ups from this connection. Try again later.', 'rate_limited');
+    }
+    obj(body);
+    const role = oneOf(body.role, 'role', ['passenger', 'captain']);
+    const name = text(body.name, 'Name', { min: 2, max: 80 });
+    const phone = parsePhone(body.phone);
+    const email = parseEmail(body.email);
+    const password = text(body.password, 'Password', { min: 6, max: 128 });
+    const profile = role === 'captain' ? parseCaptainProfile(body) : null;
+    return createAccount({ role, name, phone, email, passwordHash: hashPassword(password), profile });
+  });
+
+  // Sign in with Google (passengers). First call sends only the token; if the
+  // person is new, the reply says which details are still needed, and the app
+  // calls again with the token plus phone (and name if Google had none).
+  router.add('POST', '/api/auth/google', async ({ body, ip }) => {
+    if (!googleVerify) throw new HttpError(503, 'Google sign-in is not set up yet', 'google_unavailable');
+    obj(body);
+    const t = Date.parse(now());
+    if (!loginByIp.allow(ip, t)) {
+      throw new HttpError(429, 'Too many attempts. Wait a few minutes and try again.', 'rate_limited');
+    }
+    let g;
+    try {
+      g = await googleVerify(body.idToken);
+    } catch {
+      throw new HttpError(401, 'Google sign-in failed. Please try again.', 'google_failed');
+    }
+    const existing = db.prepare('SELECT * FROM users WHERE google_sub = ?').get(g.sub);
+    if (existing) {
+      if (existing.status === 'suspended') throw new HttpError(403, 'This account is suspended', 'suspended');
+      return startSession(existing);
+    }
+    // Never attach Google to an account that was made with a typed email: nobody
+    // proved they own that address, so linking could hand the account to a stranger.
+    if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(g.email)) {
+      throw new HttpError(409, 'That email already has an account. Sign in with your password instead.', 'email_taken');
+    }
+    const name = (typeof body.name === 'string' && body.name.trim()) || g.name;
+    if (body.phone == null || name.trim().length < 2) {
+      return { needsProfile: true, name: g.name, email: g.email };
+    }
+    if (!registerByIp.allow(ip, t)) {
+      throw new HttpError(429, 'Too many sign-ups from this connection. Try again later.', 'rate_limited');
+    }
+    const cleanName = text(name, 'Name', { min: 2, max: 80 });
+    const phone = parsePhone(body.phone);
+    // Google users have no password; store a hash of random bytes nobody knows.
+    return createAccount({
+      role: 'passenger',
+      name: cleanName,
+      phone,
+      email: g.email,
+      googleSub: g.sub,
+      passwordHash: hashPassword(randomUUID() + randomUUID()),
+      profile: null,
+    });
   });
 
   router.add('POST', '/api/auth/login', ({ body, ip }) => {
     obj(body);
-    let phone;
-    try {
-      phone = normalizeUgPhone(String(body.phone ?? ''));
-    } catch {
-      throw new HttpError(401, 'Wrong phone number or password', 'bad_login');
+    const raw = String(body.identifier ?? body.phone ?? '').trim();
+    let column;
+    let key;
+    if (raw.includes('@')) {
+      column = 'email';
+      key = raw.toLowerCase();
+    } else {
+      column = 'phone';
+      try {
+        key = normalizeUgPhone(raw);
+      } catch {
+        throw new HttpError(401, 'Wrong email, phone number or password', 'bad_login');
+      }
     }
     const t = Date.parse(now());
-    if (!loginByPhone.allow(phone, t) || !loginByIp.allow(ip, t)) {
+    if (!loginByPhone.allow(key, t) || !loginByIp.allow(ip, t)) {
       throw new HttpError(429, 'Too many attempts. Wait a few minutes and try again.', 'rate_limited');
     }
     const password = typeof body.password === 'string' ? body.password : '';
-    const user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
+    const user = db.prepare(`SELECT * FROM users WHERE ${column} = ?`).get(key);
     // Hash even when the user is missing so timing does not reveal who has an account.
     const ok = verifyPassword(password, user?.password_hash ?? 'scrypt$AAAA$AAAA') && user;
-    if (!ok) throw new HttpError(401, 'Wrong phone number or password', 'bad_login');
+    if (!ok) throw new HttpError(401, 'Wrong email, phone number or password', 'bad_login');
     if (user.status === 'suspended') throw new HttpError(403, 'This account is suspended', 'suspended');
-    const at = now();
-    const { token, tokenHash } = newSessionToken();
-    db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?,?,?,?)').run(
-      tokenHash,
-      user.id,
-      at,
-      sessionExpiry(at),
-    );
-    return { token, user: meView(user) };
+    return startSession(user);
   });
 
   // ---------- routes: any signed-in user ----------
 
   function meView(u) {
-    const view = { id: u.id, role: u.role, name: u.name, phone: u.phone, status: u.status };
+    const view = { id: u.id, role: u.role, name: u.name, phone: u.phone, email: u.email ?? null, status: u.status };
     if (u.role === 'captain') {
       const p = getProfile(u.id);
       view.captain = {

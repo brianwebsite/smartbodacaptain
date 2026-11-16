@@ -51,9 +51,36 @@ class Session extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> login(String phone, String password) async {
-    final r = await api.post('/api/auth/login', {'phone': phone, 'password': password});
+  /// [identifier] is a phone number or an email address.
+  Future<void> login(String identifier, String password) async {
+    final r = await api.post('/api/auth/login', {'identifier': identifier, 'password': password});
     await _accept(r);
+  }
+
+  /// The Google "web" client ID if the server has Google sign-in turned on.
+  Future<String?> googleServerClientId() async {
+    try {
+      final r = await api.get('/api/auth/options');
+      final g = r['google'];
+      if (g is Map<String, dynamic>) return g['serverClientId'] as String?;
+    } on ApiException {
+      // No options means no Google button.
+    }
+    return null;
+  }
+
+  /// Sends Google's proof to the server. Returns null when the person is now
+  /// signed in, or the server's reply when it still needs a phone number
+  /// (`needsProfile`, `name`, `email`).
+  Future<Map<String, dynamic>?> googleSignIn(String idToken, {String? phone, String? name}) async {
+    final r = await api.post('/api/auth/google', {
+      'idToken': idToken,
+      if (phone != null) 'phone': phone,
+      if (name != null) 'name': name,
+    });
+    if (r['needsProfile'] == true) return r;
+    await _accept(r);
+    return null;
   }
 
   Future<void> register(Map<String, dynamic> fields) async {

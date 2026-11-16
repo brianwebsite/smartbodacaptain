@@ -48,3 +48,11 @@ Render's free plan has no permanent disk: data is wiped when the service restart
 3. Environment variables: `ADMIN_PHONE`, `ADMIN_PASSWORD` (10+ characters), `TRUST_PROXY=1`. `GOOGLE_MAPS_API_KEY` is optional.
 4. Deploy. Render gives you an address like `https://smartboda-xxxx.onrender.com`. Open `/health` on it to check.
 5. Set the GitHub variable `API_BASE_URL` to that address and re-run the "Android apps" workflow.
+
+## Google sign-in for passengers (optional)
+1. console.cloud.google.com: create a project (free; no billing needed). APIs & Services > OAuth consent screen: set the app name and your email.
+2. Credentials > Create credentials > OAuth client ID. Make **two**:
+   - Type **Web application**. Copy its Client ID. This is `GOOGLE_CLIENT_ID` on the server.
+   - Type **Android**, package name `ug.smartboda.passenger`, SHA-1 = the fingerprint of `android-debug/debug.keystore` (printed by `keytool -list -v -keystore android-debug/debug.keystore -storepass android`).
+3. Set `GOOGLE_CLIENT_ID` on the server and restart it. The "Continue with Google" button appears by itself when the server has it.
+4. While the consent screen is in "Testing", only the test users you list can sign in. Publish it when you are ready.
