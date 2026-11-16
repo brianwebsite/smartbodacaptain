@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'api.dart';
@@ -24,7 +26,6 @@ class WalletScreen extends StatefulWidget {
 class _WalletScreenState extends State<WalletScreen> {
   WalletInfo? _wallet;
   String? _error;
-  bool _busy = false;
 
   @override
   void initState() {
@@ -47,23 +48,26 @@ class _WalletScreenState extends State<WalletScreen> {
   }
 
   Future<void> _topup() async {
-    setState(() => _busy = true);
-    try {
-      await widget.api.post('/api/wallet/topup', {});
-    } on ApiException catch (e) {
-      if (mounted) {
-        await showDialog<void>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text('Add money'),
-            content: Text(e.message),
-            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
+    final w = _wallet;
+    if (w != null && !w.topupAvailable) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Add money'),
+          content: const Text(
+              'Adding money by mobile money is coming soon. Until then, pay cash, or ask Smart Boda to credit your wallet.'),
+          actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
+        ),
+      );
+      return;
     }
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      isDismissible: false,
+      builder: (_) => _TopupSheet(api: widget.api),
+    );
+    await _load();
   }
 
   @override
@@ -102,7 +106,7 @@ class _WalletScreenState extends State<WalletScreen> {
                     const SizedBox(height: 16),
                     FilledButton.icon(
                       style: FilledButton.styleFrom(backgroundColor: brandAccent, foregroundColor: Colors.black87),
-                      onPressed: _busy ? null : _topup,
+                      onPressed: _topup,
                       icon: const Icon(Icons.add),
                       label: const Text('Add money'),
                     ),
@@ -147,5 +151,175 @@ class _WalletScreenState extends State<WalletScreen> {
     );
     if (widget.embedded) return SafeArea(child: body);
     return Scaffold(appBar: AppBar(title: const Text('Wallet')), body: body);
+  }
+}
+
+/// Ask for an amount and a mobile money number, then wait while the person approves on their phone.
+class _TopupSheet extends StatefulWidget {
+  const _TopupSheet({required this.api});
+
+  final ApiClient api;
+
+  @override
+  State<_TopupSheet> createState() => _TopupSheetState();
+}
+
+class _TopupSheetState extends State<_TopupSheet> {
+  final _amount = TextEditingController(text: '10000');
+  final _phone = TextEditingController();
+  bool _busy = false;
+  bool _waiting = false;
+  String? _error;
+  String? _result;
+  Timer? _poll;
+  int _tries = 0;
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    _amount.dispose();
+    _phone.dispose();
+    super.dispose();
+  }
+
+  Future<void> _start() async {
+    final amount = int.tryParse(_amount.text.replaceAll(RegExp(r'[^0-9]'), ''));
+    if (amount == null || amount < 1000) {
+      setState(() => _error = 'The smallest top-up is UGX 1,000');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final r = await widget.api.post('/api/wallet/topup', {'amount': amount, 'phone': _phone.text.trim()});
+      final ref = r['reference'] as String;
+      setState(() {
+        _waiting = true;
+        _tries = 0;
+      });
+      _poll = Timer.periodic(const Duration(seconds: 5), (_) => _check(ref));
+    } on ApiException catch (e) {
+      setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _check(String ref) async {
+    _tries++;
+    try {
+      final r = await widget.api.get('/api/wallet/topup/$ref');
+      final status = r['status'] as String;
+      if (status == 'success' || status == 'failed') {
+        _poll?.cancel();
+        if (mounted) {
+          setState(() {
+            _waiting = false;
+            _result = status == 'success' ? 'success' : 'failed';
+          });
+        }
+        return;
+      }
+    } on ApiException {
+      // Try again on the next beat.
+    }
+    if (_tries >= 36 && mounted) {
+      _poll?.cancel();
+      setState(() {
+        _waiting = false;
+        _result = 'later';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    Widget body;
+    if (_result != null) {
+      final ok = _result == 'success';
+      body = Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Icon(ok ? Icons.check_circle : (_result == 'failed' ? Icons.error_outline : Icons.hourglass_bottom),
+              size: 56, color: ok ? Colors.green : brandAccent),
+          const SizedBox(height: 8),
+          Text(
+            ok
+                ? 'Money added'
+                : (_result == 'failed' ? 'The payment did not go through' : 'We are still waiting for your payment'),
+            textAlign: TextAlign.center,
+            style: t.headlineSmall,
+          ),
+          if (_result == 'later')
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text('If you approved it, the money will appear in your wallet within a few minutes.', textAlign: TextAlign.center),
+            ),
+          const SizedBox(height: 16),
+          FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Done')),
+        ],
+      );
+    } else if (_waiting) {
+      body = Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Center(child: Pulse(size: 90, child: Icon(Icons.phone_android, color: brandPrimary, size: 36))),
+          const SizedBox(height: 12),
+          Text('Check your phone', textAlign: TextAlign.center, style: t.headlineSmall),
+          const SizedBox(height: 6),
+          const Text('Approve the mobile money payment with your PIN. This page updates by itself.', textAlign: TextAlign.center),
+        ],
+      );
+    } else {
+      body = Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Add money', style: t.headlineSmall),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            children: [
+              for (final a in [5000, 10000, 20000, 50000])
+                ActionChip(label: Text(ugx(a)), onPressed: () => setState(() => _amount.text = '$a')),
+            ],
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _amount,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'Amount (UGX)'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _phone,
+            keyboardType: TextInputType.phone,
+            decoration: const InputDecoration(labelText: 'MTN or Airtel number to pay from', hintText: '0772 123456'),
+          ),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+            ),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: _busy ? null : _start,
+            child: _busy
+                ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Text('Send payment request'),
+          ),
+          TextButton(onPressed: _busy ? null : () => Navigator.pop(context), child: const Text('Cancel')),
+        ],
+      );
+    }
+    return Padding(
+      padding: EdgeInsets.fromLTRB(24, 24, 24, 24 + MediaQuery.of(context).viewInsets.bottom),
+      child: SingleChildScrollView(child: body),
+    );
   }
 }

@@ -19,6 +19,7 @@ import { googleVerifier } from './google.js';
 import { ensureAdmin } from './admin.js';
 import { photonPlaces } from './places.js';
 import { brevoMailer } from './mailer.js';
+import { livepayClient } from './livepay.js';
 
 const port = Number.parseInt(process.env.PORT ?? '8080', 10);
 const dbPath = process.env.DB_PATH ?? './data/smartboda.db';
@@ -36,8 +37,18 @@ console.log(`Google sign-in: ${googleClientId ? 'on' : 'off'}`);
 const mailer = brevoMailer({ apiKey: process.env.BREVO_API_KEY?.trim(), from: process.env.MAIL_FROM?.trim() });
 console.log(`Password reset email: ${mailer ? 'on' : 'off'}`);
 
+const livepay = livepayClient({
+  enabled: process.env.LIVEPAY_ENABLED === 'true',
+  apiKey: process.env.LIVEPAY_API_KEY?.trim(),
+  accountNumber: process.env.LIVEPAY_ACCOUNT_NUMBER?.trim(),
+  webhookSecret: process.env.LIVEPAY_WEBHOOK_SECRET?.trim(),
+});
+console.log(`LivePay top-ups: ${livepay ? 'on' : 'off'}`);
+
 const { server } = createApp({
   mailer,
+  livepay,
+  publicUrl: process.env.PUBLIC_URL?.trim().replace(/\/+$/, '') || null,
   db,
   routing,
   googleClientId,

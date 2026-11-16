@@ -101,6 +101,17 @@ CREATE TABLE IF NOT EXISTS wallet_ledger (
 CREATE INDEX IF NOT EXISTS wallet_user ON wallet_ledger(user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS wallet_once_per_trip ON wallet_ledger(trip_id, kind, user_id) WHERE trip_id IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS topups (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  amount INTEGER NOT NULL CHECK (amount > 0),
+  phone TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  internal_reference TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS topups_user ON topups(user_id, created_at);
+
 CREATE TABLE IF NOT EXISTS password_resets (
   token_hash TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),

@@ -377,3 +377,109 @@ test('an old database that required a phone number is upgraded and keeps its peo
   db.close();
   openDb(path).close(); // opening again is harmless
 });
+
+// ---------- LivePay top-ups (LivePay itself is replaced by a stand-in) ----------
+import { createHmac } from 'node:crypto';
+import { livepayClient } from '../src/livepay.js';
+
+async function lpHarness() {
+  const lp = { collects: [], remote: new Map(), refuse: false, down: false };
+  const fetchImpl = async (url, opts = {}) => {
+    const json = (status, body) => ({ ok: status < 400, status, json: async () => body });
+    if (String(url).endsWith('/collect-money')) {
+      const b = JSON.parse(opts.body);
+      if (lp.down) throw new Error('network');
+      lp.collects.push(b);
+      if (lp.refuse) return json(400, { success: false });
+      lp.remote.set(b.reference, { status: 'Pending', amount: b.amount, internal_reference: 'LP-' + b.reference });
+      return json(200, { success: true, internal_reference: 'LP-' + b.reference });
+    }
+    const ref = new URL(url).searchParams.get('reference');
+    const r = lp.remote.get(ref);
+    if (!r) return json(404, { success: false });
+    return json(200, { success: true, status: r.status, customer_reference: ref, amount: r.amount, currency: 'UGX', internal_reference: r.internal_reference });
+  };
+  const livepay = livepayClient({ enabled: true, apiKey: 'k', accountNumber: 'acc', webhookSecret: 'whsec', fetchImpl });
+  const db = openDb(':memory:');
+  const { server } = createApp({ db, routing: estimateRouting(), livepay, publicUrl: 'https://sb.example', now: () => new Date().toISOString() });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (method, path, body, token, headers = {}) => {
+    const res = await fetch(base + path, {
+      method,
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() };
+  };
+  const reg = await call('POST', '/api/auth/register', { role: 'passenger', name: 'Amina', phone: '0773999001', password: 'secret123' });
+  return { lp, call, token: reg.body.token, id: reg.body.user.id, close: () => new Promise((r) => server.close(r)) };
+}
+
+test('top-up: money is added only after LivePay confirms it, and only once', async () => {
+  const h = await lpHarness();
+  assert.equal((await h.call('GET', '/api/wallet', undefined, h.token)).body.topupAvailable, true);
+  const r = await h.call('POST', '/api/wallet/topup', { amount: 20000, phone: '0772123456' }, h.token);
+  assert.equal(r.status, 200);
+  assert.equal(h.lp.collects[0].phoneNumber, '0772123456');
+  assert.equal(h.lp.collects[0].amount, 20000);
+  const ref = r.body.reference;
+
+  let s = await h.call('GET', `/api/wallet/topup/${ref}`, undefined, h.token);
+  assert.equal(s.body.status, 'pending');
+  assert.equal(s.body.balance, 0);
+
+  h.lp.remote.get(ref).status = 'Success';
+  s = await h.call('GET', `/api/wallet/topup/${ref}`, undefined, h.token);
+  assert.equal(s.body.status, 'success');
+  assert.equal(s.body.balance, 20000);
+  await h.call('GET', `/api/wallet/topup/${ref}`, undefined, h.token);
+  assert.equal((await h.call('GET', '/api/wallet', undefined, h.token)).body.balance, 20000); // not twice
+  await h.close();
+});
+
+test('top-up: a wrong amount from LivePay, a refusal and a failure never add money', async () => {
+  const h = await lpHarness();
+  const a = (await h.call('POST', '/api/wallet/topup', { amount: 5000, phone: '0772123456' }, h.token)).body.reference;
+  h.lp.remote.get(a).status = 'Success';
+  h.lp.remote.get(a).amount = 1000; // does not match what we asked for
+  assert.equal((await h.call('GET', `/api/wallet/topup/${a}`, undefined, h.token)).body.status, 'pending');
+  h.lp.remote.get(a).status = 'Failed';
+  assert.equal((await h.call('GET', `/api/wallet/topup/${a}`, undefined, h.token)).body.status, 'failed');
+
+  h.lp.refuse = true;
+  const refused = await h.call('POST', '/api/wallet/topup', { amount: 5000, phone: '0772123456' }, h.token);
+  assert.equal(refused.status, 502);
+  assert.equal((await h.call('GET', '/api/wallet', undefined, h.token)).body.balance, 0);
+
+  assert.equal((await h.call('POST', '/api/wallet/topup', { amount: 10, phone: '0772123456' }, h.token)).status, 400);
+  assert.equal((await h.call('POST', '/api/wallet/topup', { amount: 5000, phone: '0412123456' }, h.token)).status, 400);
+  await h.close();
+});
+
+test('top-up: a network error is never retried, and the next wallet visit settles it', async () => {
+  const h = await lpHarness();
+  h.lp.down = true;
+  const r = await h.call('POST', '/api/wallet/topup', { amount: 5000, phone: '0772123456' }, h.token);
+  assert.equal(r.status, 200); // might still have reached LivePay, so we keep it pending
+  assert.equal(h.lp.collects.length, 0);
+  h.lp.down = false;
+  h.lp.remote.set(r.body.reference, { status: 'Success', amount: 5000, internal_reference: 'x' });
+  assert.equal((await h.call('GET', '/api/wallet', undefined, h.token)).body.balance, 5000);
+  await h.close();
+});
+
+test('webhook: only a correctly signed call is accepted', async () => {
+  const h = await lpHarness();
+  const ref = (await h.call('POST', '/api/wallet/topup', { amount: 5000, phone: '0772123456' }, h.token)).body.reference;
+  h.lp.remote.get(ref).status = 'Success';
+  const body = { customer_reference: ref, internal_reference: 'LP-' + ref, status: 'Success' };
+  const t = String(Math.floor(Date.now() / 1000));
+  const sign = (secret) => `t=${t},v=${createHmac('sha256', secret).update(`https://sb.example/api/livepay-webhook${t}customer_reference${ref}internal_reference${body.internal_reference}statusSuccess`).digest('hex')}`;
+  const bad = await h.call('POST', '/api/livepay-webhook', body, null, { 'x-webhook-signature': sign('wrong') });
+  assert.equal(bad.status, 401);
+  const good = await h.call('POST', '/api/livepay-webhook', body, null, { 'x-webhook-signature': sign('whsec') });
+  assert.equal(good.status, 200);
+  assert.equal((await h.call('GET', '/api/wallet', undefined, h.token)).body.balance, 5000);
+  await h.close();
+});

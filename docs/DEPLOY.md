@@ -75,3 +75,16 @@ The log line `Password reset email: on` confirms it. Without these, the app tell
 | `BREVO_API_KEY`, `MAIL_FROM` | Turns on forgot-password emails |
 | `DB_PATH` | Where the database file lives |
 | `TRUST_PROXY=1` | Behind Render or another proxy, so rate limits see the real visitor |
+
+## Mobile money top-ups with LivePay
+Passengers add money to their wallet through LivePay (3% collection fee, which Smart Boda absorbs: the wallet is credited the full amount). Set these on the server (Render: Environment), never in the apps or on GitHub:
+| Variable | Value |
+|---|---|
+| `LIVEPAY_ENABLED` | `true` |
+| `LIVEPAY_API_KEY` | your LivePay API key |
+| `LIVEPAY_ACCOUNT_NUMBER` | your LivePay account number |
+| `LIVEPAY_WEBHOOK_SECRET` | the webhook secret from LivePay |
+| `PUBLIC_URL` | the server's public address, for example `https://smartbodacaptain.onrender.com` (used to check webhook signatures) |
+
+In LivePay, set the webhook URL to `PUBLIC_URL/api/livepay-webhook`. The log line `LivePay top-ups: on` confirms it. Money is added only after the server asks LivePay for the payment and the reference, amount and currency match, and never twice. The webhook is only a nudge; if it is missing, the app's own status check settles the payment.
+LivePay may require a fixed server IP to be whitelisted. Render's free plan has no fixed IP, so if LivePay refuses requests, that is why: move to a server with a fixed address.

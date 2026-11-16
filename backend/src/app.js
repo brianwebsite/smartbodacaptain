@@ -25,6 +25,7 @@ import { nightPercent } from './night.js';
 import * as wallet from './wallet.js';
 import { captainCancelCounts, passengerCancelCount, captainStanding, passengerStanding } from './behavior.js';
 import { haversineKm } from './geo.js';
+import { isVerifiedSuccess, isFailedStatus } from './livepay.js';
 import { VEHICLE_TYPES, VEHICLE_SEATS, CANCEL_REASONS, scaleFareConfig, etaMinutes } from './vehicles.js';
 import { HttpError, bad, obj, text, oneOf, bool, num, int, point } from './validate.js';
 
@@ -45,6 +46,8 @@ export function createApp({
   googleClientId = null,
   places = null,
   mailer = null,
+  livepay = null,
+  publicUrl = null,
 }) {
   const router = new Router();
   const loginByPhone = new RateLimiter(10, 15 * 60 * 1000);
@@ -922,29 +925,124 @@ export function createApp({
   router.add(
     'GET',
     '/api/wallet',
-    ({ user }) => ({
+    async ({ user }) => {
+      if (user.role === 'passenger') await settlePendingTopups(user.id);
+      return {
       balance: wallet.balance(db, user.id),
       held: wallet.held(db, user.id),
       available: user.role === 'captain' ? wallet.balance(db, user.id) : wallet.available(db, user.id),
       entries: wallet.entries(db, user.id),
-      topupAvailable: false,
-    }),
+      topupAvailable: Boolean(livepay) && user.role === 'passenger',
+      };
+    },
     { roles: ['passenger', 'captain'] },
   );
+
+  const topupByUser = new RateLimiter(3, 10 * 60 * 1000);
+
+  /** Asks LivePay what happened to one top-up and, if it truly succeeded, adds the money once. */
+  async function reconcileTopup(row) {
+    if (row.status !== 'pending') return row.status;
+    let d;
+    try {
+      d = await livepay.status(row.id);
+    } catch {
+      return 'pending'; // LivePay unreachable: try again later, never guess
+    }
+    if (isVerifiedSuccess(d, row)) {
+      transaction(db, () => {
+        const res = db.prepare("UPDATE topups SET status = 'success' WHERE id = ? AND status = 'pending'").run(row.id);
+        if (res.changes === 1) {
+          wallet.addEntry(db, { userId: row.user_id, amount: row.amount, kind: 'topup', note: `MoMo ${row.id}`, at: now() });
+        }
+      });
+      return 'success';
+    }
+    if (isFailedStatus(d)) {
+      db.prepare("UPDATE topups SET status = 'failed' WHERE id = ? AND status = 'pending'").run(row.id);
+      return 'failed';
+    }
+    return 'pending';
+  }
 
   router.add(
     'POST',
     '/api/wallet/topup',
-    ({ user }) => {
+    async ({ user, body }) => {
       if (user.role !== 'passenger') throw new HttpError(403, 'Not allowed', 'forbidden');
-      throw new HttpError(
-        503,
-        'Adding money by mobile money is coming soon. Until then, pay cash or ask Smart Boda to credit your wallet.',
-        'topup_unavailable',
+      if (!livepay) {
+        throw new HttpError(
+          503,
+          'Adding money by mobile money is coming soon. Until then, pay cash or ask Smart Boda to credit your wallet.',
+          'topup_unavailable',
+        );
+      }
+      obj(body);
+      const amount = int(body.amount, 'amount', { min: 1000, max: 500_000 });
+      const intl = parsePhone(body.phone); // +2567XXXXXXXX
+      const phone = `0${intl.slice(4)}`; // 07XXXXXXXX, the form LivePay takes
+      if (!/^0[37]\d{8}$/.test(phone)) throw bad('Enter an MTN or Airtel mobile money number', 'bad_phone');
+      if (!topupByUser.allow(user.id, Date.parse(now()))) {
+        throw new HttpError(429, 'Please wait a few minutes before another top-up.', 'rate_limited');
+      }
+      const id = `SB${randomUUID().replaceAll('-', '').slice(0, 26)}`;
+      db.prepare('INSERT INTO topups (id, user_id, amount, phone, created_at) VALUES (?,?,?,?,?)').run(
+        id, user.id, amount, phone, now(),
       );
+      try {
+        const r = await livepay.collect({ phone, amount, reference: id, description: 'Smart Boda wallet' });
+        db.prepare('UPDATE topups SET internal_reference = ? WHERE id = ?').run(r.internalReference, id);
+      } catch (err) {
+        if (err.refused) {
+          db.prepare("UPDATE topups SET status = 'failed' WHERE id = ?").run(id);
+          throw new HttpError(502, 'The payment request could not be sent. Please try again.', 'topup_failed');
+        }
+        // Timeout or network error: LivePay may still have received it. Never send it again;
+        // checking its status settles it either way.
+      }
+      return { reference: id, status: 'pending' };
     },
     { roles: ['passenger', 'captain'] },
   );
+
+  router.add(
+    'GET',
+    '/api/wallet/topup/:reference',
+    async ({ user, params }) => {
+      const row = db.prepare('SELECT * FROM topups WHERE id = ? AND user_id = ?').get(params.reference, user.id);
+      if (!row) throw new HttpError(404, 'Payment not found');
+      const status = livepay ? await reconcileTopup(row) : row.status;
+      return { status, amount: row.amount, balance: wallet.balance(db, user.id) };
+    },
+    { roles: ['passenger'] },
+  );
+
+  // LivePay tells us a payment changed. We still ask LivePay for the truth before adding any money.
+  router.add('POST', '/api/livepay-webhook', async ({ req, body }) => {
+    if (!livepay) throw new HttpError(404, 'Not found');
+    obj(body);
+    const origin = publicUrl ?? `${req.headers['x-forwarded-proto'] ?? 'https'}://${req.headers['x-forwarded-host'] ?? req.headers.host}`;
+    const ok = livepay.verifyWebhook({
+      signature: String(req.headers['x-webhook-signature'] ?? ''),
+      origin,
+      body,
+      nowSec: Date.parse(now()) / 1000,
+    });
+    if (!ok) throw new HttpError(401, 'Invalid signature', 'bad_signature');
+    const row = db.prepare('SELECT * FROM topups WHERE id = ?').get(String(body.customer_reference ?? ''));
+    if (row) await reconcileTopup(row);
+    return { ok: true };
+  });
+
+  // Top-ups that were paid while the app was closed are settled the next time the passenger opens it.
+  async function settlePendingTopups(userId) {
+    if (!livepay) return;
+    const since = new Date(Date.parse(now()) - 24 * 3600 * 1000).toISOString();
+    const rows = db
+      .prepare("SELECT * FROM topups WHERE user_id = ? AND status = 'pending' AND created_at >= ? LIMIT 3")
+      .all(userId, since);
+    for (const r of rows) await reconcileTopup(r);
+  }
 
   // ---------- routes: captain ----------
 
