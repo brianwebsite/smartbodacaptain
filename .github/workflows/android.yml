@@ -34,9 +34,9 @@ jobs:
           - app: captain
             label: Smart Boda Captain
     env:
-      # Set a repository variable API_BASE_URL (Settings > Secrets and variables >
+      # Defaults to the Render test server. To use another server, set a REPOSITORY variable API_BASE_URL (Settings > Secrets and variables >
       # Actions > Variables) to point the apps at your real server.
-      API_BASE_URL: ${{ vars.API_BASE_URL || 'http://10.0.2.2:8080' }}
+      API_BASE_URL: ${{ vars.API_BASE_URL || 'https://smartbodacaptain.onrender.com' }}
     steps:
       - uses: actions/checkout@v4
 
