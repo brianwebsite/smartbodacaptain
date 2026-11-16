@@ -107,7 +107,7 @@ class _WalletScreenState extends State<WalletScreen> {
                   ...[
                     const SizedBox(height: 16),
                     FilledButton.icon(
-                      style: FilledButton.styleFrom(backgroundColor: brandAccent, foregroundColor: Colors.black87),
+                      style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: brandPrimary),
                       onPressed: _topup,
                       icon: const Icon(Icons.add),
                       label: Text(widget.isCaptain ? 'Add commission credit' : 'Add money'),

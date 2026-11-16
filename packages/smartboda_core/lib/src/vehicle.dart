@@ -15,7 +15,7 @@ class VehicleType {
 }
 
 const List<VehicleType> vehicleTypes = [
-  VehicleType('boda', 'Boda', Icons.two_wheeler, 'Quick through traffic', Color(0xFF4B1FA8)),
+  VehicleType('boda', 'Boda', Icons.two_wheeler, 'Quick through traffic', Color(0xFFFF1493)),
   VehicleType('electric_boda', 'Electric boda', Icons.electric_moped, 'Quiet and clean', Color(0xFF00897B)),
   VehicleType('car', 'Car', Icons.directions_car, 'Up to 3 people', Color(0xFFFF8A00), seats: 3),
   VehicleType('car_xl', 'Car XL', Icons.airport_shuttle, 'Up to 6 people', Color(0xFFD81B60), seats: 6),

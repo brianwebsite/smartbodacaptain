@@ -349,12 +349,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       final unrated = r['unrated'] == null ? null : Trip.fromJson(r['unrated'] as Map<String, dynamic>);
       final before = _trip;
       Trip? shown = t;
+      var finishedNow = false;
       if (t == null && before != null && !before.isFinal) {
         // The trip left the active list: find out how it ended.
         try {
           final fr = await _api.get('/api/trips/${before.id}');
           final ft = Trip.fromJson(fr['trip'] as Map<String, dynamic>);
           if (ft.status == 'no_captain' || ft.status == 'cancelled') shown = ft;
+          if (ft.status == 'completed') finishedNow = true;
         } on ApiException {
           // The next poll tries again.
         }
@@ -382,6 +384,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       }
       if (!mounted) return;
       setState(() => _trip = shown);
+      if (finishedNow) _startFresh(); // the journey is over: no more fare work-out for the old trip
       if (shown != null) _followTrip(shown);
       if (shown == null) {
         _captainPoint.moveTo(null);
@@ -514,7 +517,25 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     );
     _skippedRatings.add(t.id);
     _ratingOpen = false;
+    _startFresh();
     await _refreshTrip();
+  }
+
+  /// After a finished journey the home screen goes back to a clean start. The old destination is
+  /// forgotten, so the app does not work out the same fare again.
+  void _startFresh() {
+    if (!mounted || _trip != null) return;
+    setState(() {
+      _dropoff = null;
+      _estimate = null;
+      _estimating = false;
+      _fittedFor = null;
+      _lastBody = null;
+      _round = 1;
+      _error = null;
+    });
+    if (_me != null) _moveMap(_me!, 16);
+    _loadNearby();
   }
 
   void _openChat(Trip t) {

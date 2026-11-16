@@ -103,7 +103,7 @@ class AccountMenu extends StatelessWidget {
                       const Positioned(
                         right: 0,
                         bottom: 0,
-                        child: CircleAvatar(radius: 11, backgroundColor: brandAccent, child: Icon(Icons.camera_alt, size: 13, color: Colors.black87)),
+                        child: CircleAvatar(radius: 11, backgroundColor: Colors.white, child: Icon(Icons.camera_alt, size: 13, color: brandPrimary)),
                       ),
                     ],
                   ),

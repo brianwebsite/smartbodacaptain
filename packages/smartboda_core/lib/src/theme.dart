@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 
-/// Smart Boda's own colours: royal violet with a sunrise-orange accent.
-const Color brandPrimary = Color(0xFF4B1FA8);
-const Color brandDark = Color(0xFF33147A);
-const Color brandAccent = Color(0xFFFF8A00);
-const Color brandSurface = Color(0xFFF7F4FC);
+/// Smart Boda's own colours: bold hot pink and white. The gold accent is only for rating stars.
+const Color brandPrimary = Color(0xFFFF1493);
+const Color brandDark = Color(0xFFC4006A);
+const Color brandAccent = Color(0xFFFFB300);
+const Color brandSurface = Color(0xFFFFF5FA);
 
-/// The Smart Boda look: violet, orange highlights, rounded shapes, big touch targets.
+/// The Smart Boda look: bold hot pink and white, rounded shapes, big touch targets.
 ThemeData bodaTheme() {
   final scheme = ColorScheme.fromSeed(
     seedColor: brandPrimary,
@@ -22,6 +22,7 @@ ThemeData bodaTheme() {
       backgroundColor: brandPrimary,
       foregroundColor: Colors.white,
       centerTitle: false,
+      titleTextStyle: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.white),
     ),
     navigationBarTheme: NavigationBarThemeData(
       backgroundColor: Colors.white,
@@ -36,13 +37,15 @@ ThemeData bodaTheme() {
       style: FilledButton.styleFrom(
         minimumSize: const Size.fromHeight(52),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+        textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
         minimumSize: const Size.fromHeight(48),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        side: const BorderSide(color: brandPrimary, width: 1.5),
+        textStyle: const TextStyle(fontWeight: FontWeight.w700),
       ),
     ),
   );
