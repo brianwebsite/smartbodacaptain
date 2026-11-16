@@ -31,6 +31,24 @@ export function livepayClient({ apiKey, accountNumber, webhookSecret, enabled = 
       return { internalReference: d.internal_reference ?? null };
     },
 
+    /**
+     * Checks that our key, account and server address are accepted, using a payment reference
+     * that does not exist. A "not found" answer means the connection works.
+     */
+    async probe() {
+      try {
+        const q = new URLSearchParams({ accountNumber, currency: 'UGX', reference: 'SBPROBE0000000000000000000' });
+        const res = await fetchImpl(`${BASE}/transaction-status?${q}`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(15000),
+        });
+        const d = await res.json().catch(() => ({}));
+        return { reachable: true, httpStatus: res.status, message: String(d.message ?? d.error ?? '').slice(0, 200) };
+      } catch (err) {
+        return { reachable: false, httpStatus: null, message: `${err.name}: ${err.message}`.slice(0, 200) };
+      }
+    },
+
     /** The truth about one payment, straight from LivePay. */
     async status(reference) {
       const q = new URLSearchParams({ accountNumber, currency: 'UGX', reference });

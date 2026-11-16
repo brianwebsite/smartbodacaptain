@@ -682,7 +682,15 @@ export function createApp({
   router.add(
     'GET',
     '/api/admin/payments-status',
-    () => ({
+    async ({ query }) => ({
+      probe: query.probe === '1' && livepay ? await livepay.probe() : null,
+      recentTopups: db
+        .prepare(
+          `SELECT t.id, t.created_at AS createdAt, t.amount, t.status, t.error, u.role,
+                  substr(t.phone, 1, 4) || '****' || substr(t.phone, -2) AS phone
+           FROM topups t JOIN users u ON u.id = t.user_id ORDER BY t.created_at DESC LIMIT 10`,
+        )
+        .all(),
       topupsOn: Boolean(livepay),
       settings: livepayStatus ?? { enabledFlag: Boolean(livepay), apiKey: Boolean(livepay), accountNumber: Boolean(livepay), webhookSecret: Boolean(livepay?.hasWebhookSecret), publicUrl: Boolean(publicUrl) },
       webhookUrl: publicUrl ? `${publicUrl}/api/livepay-webhook` : null,
@@ -1076,11 +1084,13 @@ export function createApp({
       } catch (err) {
         if (err.refused) {
           console.error(`LivePay refused a collect request: HTTP ${err.status} ${err.detail ?? ''}`);
-          db.prepare("UPDATE topups SET status = 'failed' WHERE id = ?").run(id);
+          db.prepare("UPDATE topups SET status = 'failed', error = ? WHERE id = ?").run(`LivePay answered HTTP ${err.status}: ${err.detail ?? ''}`.slice(0, 250), id);
           throw new HttpError(502, 'The payment request could not be sent. Please try again.', 'topup_failed');
         }
         // Timeout or network error: LivePay may still have received it. Never send it again;
-        // checking its status settles it either way.
+        // checking its status settles it either way. The reason is kept for the admin to see.
+        console.error(`LivePay collect did not complete: ${err.name}: ${err.message}`);
+        db.prepare('UPDATE topups SET error = ? WHERE id = ?').run(`${err.name}: ${err.message}`.slice(0, 250), id);
       }
       return { reference: id, status: 'pending' };
     },

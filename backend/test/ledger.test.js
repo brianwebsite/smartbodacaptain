@@ -353,3 +353,17 @@ test('captain photo: owner and the passenger on their trip can see it; strangers
   assert.equal(no.status, 404);
   await h.close();
 });
+
+test('admin can see why top-ups fail, and probe the LivePay connection', async () => {
+  const h = await harness();
+  const pax = await h.passenger();
+  const probe = (await h.call('GET', '/api/admin/payments-status?probe=1', undefined, h.admin)).body;
+  assert.equal(probe.probe.reachable, true);
+  assert.equal(probe.probe.httpStatus, 404); // the test LivePay answers "not found" for an unknown reference
+  await h.call('POST', '/api/wallet/topup', { amount: 5000, phone: '0772000555' }, pax.token);
+  const st = (await h.call('GET', '/api/admin/payments-status', undefined, h.admin)).body;
+  assert.equal(st.recentTopups.length, 1);
+  assert.equal(st.recentTopups[0].phone, '0772****55'); // number masked
+  assert.equal(st.probe, null);
+  await h.close();
+});

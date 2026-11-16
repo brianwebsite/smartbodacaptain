@@ -161,12 +161,28 @@ async function overview(body) {
   state.pendingCount = s.captainsPending;
   const card = (n, l) => h('div', { class: 'card' }, h('div', { class: 'n' }, n), h('div', { class: 'l' }, l));
   const ps = await api('/api/admin/payments-status').catch(() => null);
+  const out = h('span', { class: 'muted' });
   const yn = (b) => (b ? 'yes' : 'MISSING');
   const payBox = ps ? h('div', { class: 'panel', style: 'margin-bottom:12px;padding:12px' },
     h('strong', {}, ps.topupsOn ? 'Mobile money top-ups are ON' : 'Mobile money top-ups are OFF'),
     h('div', { class: 'muted' }, 'LIVEPAY_ENABLED=true: ' + yn(ps.settings.enabledFlag) + ' · API key: ' + yn(ps.settings.apiKey) +
       ' · Account number: ' + yn(ps.settings.accountNumber) + ' · Webhook secret: ' + yn(ps.settings.webhookSecret) + ' · PUBLIC_URL: ' + yn(ps.settings.publicUrl)),
-    ps.webhookUrl ? h('div', { class: 'muted' }, 'Webhook address to give LivePay: ' + ps.webhookUrl) : null) : null;
+    ps.webhookUrl ? h('div', { class: 'muted' }, 'Webhook address to give LivePay: ' + ps.webhookUrl) : null,
+    ps.topupsOn ? h('div', { style: 'margin-top:8px' },
+      h('button', { class: 'act', onclick: async (e) => {
+        e.target.disabled = true; out.textContent = 'Testing...';
+        try {
+          const r = (await api('/api/admin/payments-status?probe=1')).probe;
+          out.textContent = !r.reachable ? 'Could not reach LivePay: ' + r.message
+            : r.httpStatus === 404 || r.httpStatus === 200 ? 'Connection works (LivePay accepted our key, account and server address).'
+            : 'LivePay answered ' + r.httpStatus + (r.message ? ': ' + r.message : '') + (r.httpStatus === 401 || r.httpStatus === 403 ? '. This usually means a wrong API key or account number, or this server address is not on LivePay\'s allowed list.' : '');
+        } catch (ex) { out.textContent = ex.message; }
+        e.target.disabled = false;
+      } }, 'Test LivePay connection'), ' ', out) : null,
+    ps.recentTopups && ps.recentTopups.length ? h('table', { style: 'margin-top:8px' },
+      h('thead', {}, h('tr', {}, ['When', 'Who', 'Phone', 'UGX', 'Status', 'Why it failed'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, ps.recentTopups.map((t) => h('tr', {}, h('td', {}, when(t.createdAt)), h('td', {}, t.role === 'captain' ? 'rider' : t.role), h('td', {}, t.phone),
+        h('td', {}, ugx(t.amount)), h('td', {}, pill(t.status)), h('td', { class: 'muted' }, t.error || ''))))) : null) : null;
   body.replaceChildren(
     h('h2', {}, 'Overview'), payBox,
     h('div', { class: 'cards' },
