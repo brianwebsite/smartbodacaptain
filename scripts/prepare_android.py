@@ -46,5 +46,34 @@ if api_url.startswith("http://") and "usesCleartextTraffic" not in xml:
     xml = xml.replace("<application", '<application\n        android:usesCleartextTraffic="true"', 1)
 
 manifest.write_text(xml)
+
+# Android's release "lint vital" check crashes inside some plugins' Java code
+# (seen with google_sign_in_android). It is a style checker, not needed to
+# build a working APK, so switch it off for every sub-project.
+root_kts = app / "android" / "build.gradle.kts"
+root_groovy = app / "android" / "build.gradle"
+if root_kts.exists():
+    root_kts.write_text(root_kts.read_text() + """
+subprojects {
+    tasks.configureEach {
+        if (name.startsWith("lintVital") || name.startsWith("lintAnalyze")) {
+            enabled = false
+        }
+    }
+}
+""")
+elif root_groovy.exists():
+    root_groovy.write_text(root_groovy.read_text() + """
+subprojects {
+    tasks.configureEach { t ->
+        if (t.name.startsWith("lintVital") || t.name.startsWith("lintAnalyze")) {
+            t.enabled = false
+        }
+    }
+}
+""")
+else:
+    sys.exit("No root android/build.gradle(.kts) found to patch")
+
 print(f"Prepared {app}: label={label!r}, api={api_url}")
 print(manifest.read_text())
