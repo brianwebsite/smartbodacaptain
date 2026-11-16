@@ -86,6 +86,7 @@ export async function restoreIfMissing({ client, key }, dbPath) {
 export function startBackups({ db, client, key, intervalMs = 30000, log = console }) {
   let lastChanges = null;
   let busy = false;
+  const status = { lastOkAt: null, lastBytes: null, lastError: null, lastErrorAt: null, count: 0 };
   const snapshot = async (force = false) => {
     if (busy) return false;
     busy = true;
@@ -95,11 +96,18 @@ export function startBackups({ db, client, key, intervalMs = 30000, log = consol
       if (!force && changes === lastChanges) return false; // nothing new
       rmSync(file, { force: true });
       db.exec(`VACUUM INTO '${file.replaceAll("'", "''")}'`); // a consistent copy while the server runs
-      await client.put(key, readFileSync(file));
+      const bytes = readFileSync(file);
+      await client.put(key, bytes);
       lastChanges = changes;
+      status.lastOkAt = new Date().toISOString();
+      status.lastBytes = bytes.length;
+      status.lastError = null;
+      status.count += 1;
       return true;
     } catch (err) {
       log.error(`Database backup failed: ${err.message}`);
+      status.lastError = err.message;
+      status.lastErrorAt = new Date().toISOString();
       return false;
     } finally {
       rmSync(file, { force: true });
@@ -110,6 +118,21 @@ export function startBackups({ db, client, key, intervalMs = 30000, log = consol
   timer.unref?.();
   return {
     snapshot,
+    status: () => ({ ...status, key }),
+    /** Uploads a fresh copy, downloads it again and checks it is a real database: proof the bucket works. */
+    async verify() {
+      const wrote = await snapshot(true);
+      if (!wrote) return { ok: false, error: status.lastError ?? 'A backup was already running. Try again in a moment.' };
+      try {
+        const back = await client.get(key);
+        if (!back) return { ok: false, error: 'The upload finished but the file is not in the bucket.' };
+        const isSqlite = back.subarray(0, 15).toString('latin1') === 'SQLite format 3';
+        if (!isSqlite) return { ok: false, error: 'The file in the bucket is not a valid database.' };
+        return { ok: true, bytes: back.length, key, at: status.lastOkAt };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    },
     /** Final copy before the server stops. */
     async flush() {
       clearInterval(timer);

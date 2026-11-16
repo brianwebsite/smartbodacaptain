@@ -183,8 +183,26 @@ async function overview(body) {
       h('thead', {}, h('tr', {}, ['When', 'Who', 'Phone', 'UGX', 'Status', 'Why it failed'].map((t) => h('th', {}, t)))),
       h('tbody', {}, ps.recentTopups.map((t) => h('tr', {}, h('td', {}, when(t.createdAt)), h('td', {}, t.role === 'captain' ? 'rider' : t.role), h('td', {}, t.phone),
         h('td', {}, ugx(t.amount)), h('td', {}, pill(t.status)), h('td', { class: 'muted' }, t.error || ''))))) : null) : null;
+  const bs = await api('/api/admin/backup-status').catch(() => null);
+  const bout = h('span', { class: 'muted' });
+  const kb = (n) => (n ? Math.max(1, Math.round(n / 1024)) + ' KB' : '');
+  const backupBox = bs ? h('div', { class: 'panel', style: 'margin-bottom:12px;padding:12px' },
+    h('strong', {}, bs.on ? 'Data backup is ON' : 'Data backup is OFF'),
+    bs.on
+      ? h('div', { class: 'muted' }, bs.lastOkAt ? 'Last saved to the bucket: ' + when(bs.lastOkAt) + ' (' + kb(bs.lastBytes) + ') as ' + bs.key : 'Nothing saved yet. It saves within a minute of the first change.')
+      : h('div', { class: 'muted' }, 'Add the BACKUP_S3_* settings in Render so accounts survive a redeploy.'),
+    bs.lastError ? h('div', { style: 'color:#b3261e' }, 'Last problem: ' + bs.lastError) : null,
+    bs.on ? h('div', { style: 'margin-top:8px' },
+      h('button', { class: 'act', onclick: async (e) => {
+        e.target.disabled = true; bout.textContent = 'Saving and reading it back...';
+        try {
+          const r = (await api('/api/admin/backup-now', { method: 'POST', body: {} })).result;
+          bout.textContent = r.ok ? 'Works. Saved ' + kb(r.bytes) + ' to the bucket and read it back as a valid database.' : 'Not working: ' + r.error;
+        } catch (ex) { bout.textContent = ex.message; }
+        e.target.disabled = false;
+      } }, 'Back up now and check'), ' ', bout) : null) : null;
   body.replaceChildren(
-    h('h2', {}, 'Overview'), payBox,
+    h('h2', {}, 'Overview'), payBox, backupBox,
     h('div', { class: 'cards' },
       card(s.captainsPending, 'Captains waiting for approval'),
       card(s.captainsOnline, 'Captains online now'),

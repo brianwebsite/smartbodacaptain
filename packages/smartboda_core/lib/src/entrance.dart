@@ -97,7 +97,9 @@ class _WelcomeSplashState extends State<WelcomeSplash> with SingleTickerProvider
         decoration: const BoxDecoration(
           gradient: LinearGradient(colors: [brandPrimary, brandDark], begin: Alignment.topLeft, end: Alignment.bottomRight),
         ),
-        child: SafeArea(
+        child: CustomPaint(
+          painter: _GoldStripes(CurvedAnimation(parent: _c, curve: const Interval(0, 0.6, curve: Curves.easeOutCubic))),
+          child: SafeArea(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -112,19 +114,58 @@ class _WelcomeSplashState extends State<WelcomeSplash> with SingleTickerProvider
                 ),
               ),
               const SizedBox(height: 28),
-              _line('Welcome to', _step(0.2, 0.5), -60, const TextStyle(color: Colors.white70, fontSize: 18)),
+              _line('Welcome to', _step(0.2, 0.5), -60, const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)),
               _line('Smart Boda', _step(0.3, 0.6), 80,
-                  const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.bold)),
+                  const TextStyle(color: Colors.white, fontSize: 38, fontWeight: FontWeight.w900)),
               const SizedBox(height: 18),
               _line('Smart Cars', _step(0.5, 0.8), -80,
-                  const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w800)),
+                  const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900)),
               const SizedBox(height: 6),
               _line('Smart Rides', _step(0.65, 0.95), 80,
-                  const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w800)),
+                  const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900)),
             ],
           ),
+        ),
         ),
       ),
     );
   }
+}
+
+const _gold = Color(0xFFD4AF37);
+const _goldLight = Color(0xFFF2D675);
+
+/// Diagonal gold and white strips that sweep in from the top-right and bottom-left corners.
+class _GoldStripes extends CustomPainter {
+  _GoldStripes(this.t) : super(repaint: t);
+
+  final Animation<double> t;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p = t.value;
+    // Each strip is a slanted band: [offset along the diagonal, thickness, colour].
+    void band(Offset a, Offset b, double width, Color color, Offset slide) {
+      final paint = Paint()
+        ..color = color
+        ..strokeWidth = width
+        ..strokeCap = StrokeCap.butt;
+      final d = slide * (1 - p);
+      canvas.drawLine(a + d, b + d, paint);
+    }
+
+    final w = size.width;
+    final h = size.height;
+    // top-right corner: white, gold, white
+    band(Offset(w * 0.55, -20), Offset(w + 20, h * 0.18), 10, Colors.white, const Offset(300, -120));
+    band(Offset(w * 0.68, -20), Offset(w + 20, h * 0.12), 26, _gold, const Offset(300, -120));
+    band(Offset(w * 0.86, -20), Offset(w + 20, h * 0.05), 8, _goldLight, const Offset(300, -120));
+    // bottom-left corner: gold, white, gold
+    band(Offset(-20, h * 0.82), Offset(w * 0.45, h + 20), 8, _goldLight, const Offset(-300, 120));
+    band(Offset(-20, h * 0.88), Offset(w * 0.32, h + 20), 26, _gold, const Offset(-300, 120));
+    band(Offset(-20, h * 0.95), Offset(w * 0.18, h + 20), 10, Colors.white, const Offset(-300, 120));
+  }
+
+  @override
+  bool shouldRepaint(_GoldStripes old) => old.t != t;
 }

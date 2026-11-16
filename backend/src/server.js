@@ -74,6 +74,7 @@ const push = fcmFromEnv(process.env.FIREBASE_SERVICE_ACCOUNT);
 console.log(`Push notifications: ${push ? 'on' : 'off'}`);
 
 const { server } = createApp({
+  backups,
   mailer,
   push,
   livepay,

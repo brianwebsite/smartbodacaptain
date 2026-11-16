@@ -109,6 +109,8 @@ Render's free plan wipes the disk on every deploy, which deletes all accounts an
 
 The database is copied every 30 seconds when something changed, and once more when Render stops the server. A crash can lose up to 30 seconds of changes. If the stored copy exists but cannot be read, the server refuses to start instead of replacing it with an empty database. A paid Render disk with `DB_PATH=/var/data/smartboda.db` is the simpler, safer option when you can afford it.
 
+**Proving it works:** open the admin page, Overview. The "Data backup" box shows when the last copy reached the bucket and its size. Press **Back up now and check**: the server uploads a copy, downloads it again and confirms it is a real database. "Works" means the credentials, endpoint and bucket name are all right. You can also see the file `smartboda-app/smartboda.db` appear in the bucket in Cloudflare (R2 > your bucket > Objects).
+
 ## Email (Brevo, free: 300 emails a day)
 Used for password-reset codes and trip receipts.
 1. Sign up at brevo.com.

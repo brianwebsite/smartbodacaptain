@@ -741,20 +741,30 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   Widget _panel(BuildContext context, Trip? t) {
-    final maxHeight = MediaQuery.of(context).size.height * 0.68;
+    final maxHeight = MediaQuery.of(context).size.height * 0.8;
+    final footer = t == null ? _requestFooter(context) : null;
     return Material(
       elevation: 12,
       color: Theme.of(context).colorScheme.surface,
       borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
       child: ConstrainedBox(
         constraints: BoxConstraints(maxHeight: maxHeight),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
-          child: AnimatedSize(
-            duration: const Duration(milliseconds: 250),
-            alignment: Alignment.topCenter,
-            child: t != null ? _tripPanel(context, t) : _planPanel(context),
-          ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Flexible(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(16, 12, 16, footer == null ? 10 : 6),
+                child: AnimatedSize(
+                  duration: const Duration(milliseconds: 250),
+                  alignment: Alignment.topCenter,
+                  child: t != null ? _tripPanel(context, t) : _planPanel(context),
+                ),
+              ),
+            ),
+            if (footer != null) Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 10), child: footer),
+          ],
         ),
       ),
     );
@@ -773,6 +783,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Widget _kindSwitch() {
     return SegmentedButton<String>(
       showSelectedIcon: false,
+      style: const ButtonStyle(visualDensity: VisualDensity.compact),
       segments: const [
         ButtonSegment(value: 'ride', icon: Icon(Icons.hail), label: Text('Ride')),
         ButtonSegment(value: 'delivery', icon: Icon(Icons.inventory_2_outlined), label: Text('Delivery')),
@@ -790,7 +801,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       children: [
         if (user != null) StandingBanner(user.standing),
         _kindSwitch(),
-        const SizedBox(height: 10),
+        const SizedBox(height: 8),
         _placesCard(),
         if (_locationDenied)
           const Padding(
@@ -812,6 +823,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         mainAxisSize: MainAxisSize.min,
         children: [
           ListTile(
+            dense: true,
+            visualDensity: VisualDensity.compact,
             leading: const Icon(Icons.trip_origin, color: brandPrimary),
             title: Text(
               _pickup?.text ?? (_locating ? 'Finding your location...' : 'Set your pickup'),
@@ -824,6 +837,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           ),
           const Divider(height: 1, indent: 56),
           ListTile(
+            dense: true,
+            visualDensity: VisualDensity.compact,
             leading: const Icon(Icons.location_on, color: Colors.red),
             title: Text(
               _dropoff?.text ?? (_kind == 'delivery' ? 'Where to deliver?' : 'Where to?'),
@@ -956,7 +971,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
     final anyAvailable = est.options.any((o) => o.nearbyCount > 0);
     final chosen = est.option(_vehicle);
-    final chosenType = vehicleById(_vehicle);
     final walletOk = chosen != null && est.walletAvailable >= chosen.fare;
     if (_payment == 'wallet' && !walletOk) _payment = 'cash';
     return Column(
@@ -980,17 +994,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               ],
             ),
           ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         for (var i = 0; i < est.options.length; i += 2)
           Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(child: _optionTile(est.options[i], t)),
-                const SizedBox(width: 8),
-                Expanded(child: i + 1 < est.options.length ? _optionTile(est.options[i + 1], t) : const SizedBox.shrink()),
-              ],
+            padding: const EdgeInsets.only(bottom: 6),
+            child: IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(child: _optionTile(est.options[i], t)),
+                  const SizedBox(width: 8),
+                  Expanded(child: i + 1 < est.options.length ? _optionTile(est.options[i + 1], t) : const SizedBox.shrink()),
+                ],
+              ),
             ),
           ),
         if (!anyAvailable)
@@ -1004,6 +1020,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         Row(
           children: [
             ChoiceChip(
+              visualDensity: VisualDensity.compact,
               avatar: const Icon(Icons.payments_outlined, size: 18),
               label: const Text('Cash'),
               selected: _payment == 'cash',
@@ -1011,6 +1028,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             ),
             const SizedBox(width: 8),
             ChoiceChip(
+              visualDensity: VisualDensity.compact,
               avatar: const Icon(Icons.account_balance_wallet_outlined, size: 18),
               label: Text('Wallet · ${ugx(est.walletAvailable)}'),
               selected: _payment == 'wallet',
@@ -1020,8 +1038,23 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               TextButton(onPressed: widget.onOpenWallet, child: const Text('Add money')),
           ],
         ),
+      ],
+    );
+  }
+
+  /// The request button stays fixed at the bottom, so it never needs scrolling to.
+  Widget? _requestFooter(BuildContext context) {
+    final est = _estimate;
+    if (_dropoff == null || est == null || _estimating) return null;
+    final anyAvailable = est.options.any((o) => o.nearbyCount > 0);
+    final chosen = est.option(_vehicle);
+    final chosenType = vehicleById(_vehicle);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
         _errorLine(context),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         FilledButton(
           onPressed: _requesting || !anyAvailable ? null : _request,
           child: _requesting

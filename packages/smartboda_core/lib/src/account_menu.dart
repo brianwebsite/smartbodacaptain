@@ -162,33 +162,33 @@ class AccountMenu extends StatelessWidget {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setState) => AlertDialog(
-          title: const Text('Backup contact number'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('A second number, for example a relative, that Smart Boda can call if we cannot reach you.'),
               TextField(
                 controller: ctrl,
+                autofocus: true,
                 keyboardType: TextInputType.phone,
-                decoration: InputDecoration(labelText: 'Phone number', hintText: '0772 123456', errorText: error),
+                decoration: InputDecoration(hintText: '0772 123456', errorText: error),
+              ),
+              const SizedBox(height: 14),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () async {
+                    try {
+                      await session.api.put('/api/me/backup-phone', {'phone': ctrl.text.trim()});
+                      await session.refreshUser();
+                      if (ctx.mounted) Navigator.pop(ctx);
+                    } on ApiException catch (e) {
+                      setState(() => error = e.message);
+                    }
+                  },
+                  child: const Text('Submit'),
+                ),
               ),
             ],
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-            FilledButton(
-              onPressed: () async {
-                try {
-                  await session.api.put('/api/me/backup-phone', {'phone': ctrl.text.trim()});
-                  await session.refreshUser();
-                  if (ctx.mounted) Navigator.pop(ctx);
-                } on ApiException catch (e) {
-                  setState(() => error = e.message);
-                }
-              },
-              child: const Text('Save'),
-            ),
-          ],
         ),
       ),
     );
@@ -323,6 +323,48 @@ class _AboutScreenState extends State<AboutScreen> {
     }
   }
 
+  Widget _section(BuildContext context, String title, List<Widget> children) {
+    final t = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 22),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Container(width: 4, height: 20, decoration: BoxDecoration(color: const Color(0xFFD4AF37), borderRadius: BorderRadius.circular(2))),
+            const SizedBox(width: 8),
+            Text(title, style: t.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
+          ]),
+          const SizedBox(height: 10),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _point(IconData icon, String title, String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(radius: 18, backgroundColor: brandPrimary.withValues(alpha: 0.12), child: Icon(icon, size: 20, color: brandPrimary)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+                const SizedBox(height: 2),
+                Text(text),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final info = _info;
@@ -332,37 +374,104 @@ class _AboutScreenState extends State<AboutScreen> {
       body: info == null
           ? const Center(child: CircularProgressIndicator())
           : ListView(
-              padding: const EdgeInsets.all(20),
+              padding: EdgeInsets.zero,
               children: [
-                Text('Smart Boda', style: t.headlineMedium?.copyWith(fontWeight: FontWeight.bold, color: brandPrimary)),
-                const SizedBox(height: 12),
-                Text(info.about.isEmpty ? 'Smart Boda connects you with trusted riders and drivers in Kampala.' : info.about),
-                const SizedBox(height: 24),
-                Text('Follow us', style: t.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 12),
-                if (info.links.isEmpty)
-                  const Text('Our social pages are coming soon.')
-                else
-                  Wrap(
-                    spacing: 16,
-                    runSpacing: 16,
+                Container(
+                  padding: const EdgeInsets.fromLTRB(20, 28, 20, 26),
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(colors: [brandPrimary, brandDark], begin: Alignment.topLeft, end: Alignment.bottomRight),
+                  ),
+                  child: Column(
                     children: [
-                      for (final e in info.links.entries)
-                        if (_badges[e.key] != null)
-                          Tooltip(
-                            message: _badges[e.key]!.$2,
-                            child: InkWell(
-                              onTap: () => _open(context, e.value),
-                              borderRadius: BorderRadius.circular(30),
-                              child: CircleAvatar(
-                                radius: 28,
-                                backgroundColor: _badges[e.key]!.$1,
-                                child: _glyph(e.key),
-                              ),
-                            ),
-                          ),
+                      Container(
+                        height: 78,
+                        width: 78,
+                        decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.white),
+                        child: const Icon(Icons.two_wheeler, size: 44, color: brandPrimary),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text('Smart Boda', style: TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.w900)),
+                      const SizedBox(height: 4),
+                      const Text('Smart Cars · Smart Rides', style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w800)),
+                      const SizedBox(height: 16),
+                      Row(children: [
+                        Expanded(child: Container(height: 3, color: Colors.white)),
+                        Expanded(flex: 2, child: Container(height: 3, color: const Color(0xFFD4AF37))),
+                        Expanded(child: Container(height: 3, color: Colors.white)),
+                      ]),
                     ],
                   ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _section(context, 'Who we are', [
+                        Text(info.about.isEmpty
+                            ? 'Smart Boda is a Kampala ride app. We connect you with trusted boda riders and drivers nearby, '
+                                'so getting around the city is quick, fair and safe.'
+                            : info.about),
+                      ]),
+                      _section(context, 'What we offer', [
+                        _point(Icons.two_wheeler, 'Boda and electric boda', 'Beat the traffic on a motorcycle, or ride quietly and cleanly on an electric one.'),
+                        _point(Icons.directions_car, 'Smart Car', 'A comfortable car for up to 3 passengers.'),
+                        _point(Icons.airport_shuttle, 'Smart Car XL', 'More room for up to 6 passengers, for families and groups.'),
+                        _point(Icons.inventory_2_outlined, 'Delivery', 'Send a parcel across town with a rider who brings it straight to the door.'),
+                      ]),
+                      _section(context, 'Why riders trust us', [
+                        _point(Icons.pin_outlined, 'Trip code', 'Your rider can only start the trip with the code that is shown on your phone.'),
+                        _point(Icons.request_quote_outlined, 'Fair, clear fares', 'You see the price before you ask for a ride. No bargaining.'),
+                        _point(Icons.star_outline, 'Ratings you can see', 'Every trip is rated, and you can see your rider\'s name, photo and rating.'),
+                        _point(Icons.receipt_long_outlined, 'Receipts', 'Every trip has a receipt in your history, and one is emailed to you.'),
+                        _point(Icons.support_agent, 'Real people to help', 'Our support team is one tap away in Contact us.'),
+                      ]),
+                      if (info.supportPhone.isNotEmpty || info.supportEmail.isNotEmpty)
+                        _section(context, 'Get in touch', [
+                          if (info.supportPhone.isNotEmpty)
+                            ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: const Icon(Icons.call, color: brandPrimary),
+                              title: Text(info.supportPhone),
+                              onTap: () => callPhone(context, info.supportPhone),
+                            ),
+                          if (info.supportEmail.isNotEmpty)
+                            ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: const Icon(Icons.mail_outline, color: brandPrimary),
+                              title: Text(info.supportEmail),
+                            ),
+                        ]),
+                      _section(context, 'Follow us', [
+                        if (info.links.isEmpty)
+                          const Text('Our social pages are coming soon.')
+                        else
+                          Wrap(
+                            spacing: 16,
+                            runSpacing: 16,
+                            children: [
+                              for (final e in info.links.entries)
+                                if (_badges[e.key] != null)
+                                  Tooltip(
+                                    message: _badges[e.key]!.$2,
+                                    child: InkWell(
+                                      onTap: () => _open(context, e.value),
+                                      borderRadius: BorderRadius.circular(30),
+                                      child: CircleAvatar(
+                                        radius: 28,
+                                        backgroundColor: _badges[e.key]!.$1,
+                                        child: _glyph(e.key),
+                                      ),
+                                    ),
+                                  ),
+                            ],
+                          ),
+                      ]),
+                      const SizedBox(height: 28),
+                      Center(child: Text('Made in Kampala, Uganda', style: t.bodySmall)),
+                    ],
+                  ),
+                ),
               ],
             ),
     );

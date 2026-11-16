@@ -51,6 +51,7 @@ export function createApp({
   push = null,
   livepayStatus = null,
   publicUrl = null,
+  backups = null,
 }) {
   const router = new Router();
   const loginByPhone = new RateLimiter(10, 15 * 60 * 1000);
@@ -765,6 +766,23 @@ export function createApp({
       settings: livepayStatus ?? { enabledFlag: Boolean(livepay), apiKey: Boolean(livepay), accountNumber: Boolean(livepay), webhookSecret: Boolean(livepay?.hasWebhookSecret), publicUrl: Boolean(publicUrl) },
       webhookUrl: publicUrl ? `${publicUrl}/api/livepay-webhook` : null,
     }),
+    { roles: ['admin'] },
+  );
+
+  // Proof the backup bucket works: what happened last, and a button that writes then reads back.
+  router.add(
+    'GET',
+    '/api/admin/backup-status',
+    () => ({ on: Boolean(backups), ...(backups ? backups.status() : {}) }),
+    { roles: ['admin'] },
+  );
+  router.add(
+    'POST',
+    '/api/admin/backup-now',
+    async () => {
+      if (!backups) throw new HttpError(400, 'Backups are not set up. Add the BACKUP_S3_* settings in Render.', 'backup_off');
+      return { result: await backups.verify(), status: backups.status() };
+    },
     { roles: ['admin'] },
   );
 
