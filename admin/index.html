@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Boda Admin</title>
+<style>
+  :root {
+    --green: #0b7a4b; --green-dark: #07583a; --amber: #f5a623; --ink: #1c2420; --muted: #5d6b64;
+    --line: #dde5e0; --bg: #f4f7f5; --card: #ffffff; --red: #b3261e; --blue: #1f5fbf;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--ink); background: var(--bg); }
+  header { background: var(--green); color: #fff; display: flex; align-items: center; gap: 16px; padding: 10px 20px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; flex: 1; white-space: nowrap; }
+  header button { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.6); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  nav { display: flex; gap: 4px; background: var(--green-dark); padding: 0 12px; overflow-x: auto; }
+  nav button { background: none; border: 0; color: #cfe8dc; padding: 12px 14px; cursor: pointer; font-size: 15px; border-bottom: 3px solid transparent; white-space: nowrap; }
+  nav button.on { color: #fff; border-bottom-color: var(--amber); font-weight: 600; }
+  nav .badge { background: var(--amber); color: #3a2a00; border-radius: 10px; padding: 0 7px; font-size: 12px; margin-left: 6px; font-weight: 700; }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px; }
+  h2 { margin: 0 0 14px; font-size: 20px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .card .n { font-size: 26px; font-weight: 700; }
+  .card .l { color: var(--muted); font-size: 13px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 12px; font-weight: 600; background: #e8eeea; color: var(--ink); }
+  .pill.active, .pill.completed, .pill.in_progress { background: #d8f0e2; color: var(--green-dark); }
+  .pill.pending, .pill.requested, .pill.accepted, .pill.arrived { background: #fdecc8; color: #7a5200; }
+  .pill.suspended, .pill.cancelled, .pill.no_captain { background: #f8d7d4; color: var(--red); }
+  button.act { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 5px 10px; cursor: pointer; margin-right: 4px; font-size: 13px; }
+  button.act.good { background: var(--green); color: #fff; border-color: var(--green); }
+  button.act.bad { color: var(--red); border-color: #e7b5b1; }
+  .filters { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .filters button { border: 1px solid var(--line); background: #fff; border-radius: 16px; padding: 5px 14px; cursor: pointer; }
+  .filters button.on { background: var(--green); color: #fff; border-color: var(--green); }
+  form.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  input { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); }
+  .primary { background: var(--green); color: #fff; border: 0; border-radius: 8px; padding: 10px 18px; font-size: 15px; cursor: pointer; }
+  .login { max-width: 360px; margin: 12vh auto; background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 26px; display: flex; flex-direction: column; gap: 14px; }
+  .login h1 { margin: 0; color: var(--green); font-size: 22px; }
+  .err { color: var(--red); min-height: 1.2em; }
+  .ok { color: var(--green-dark); }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); padding: 14px 4px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+'use strict';
+
+// ---------- small helpers ----------
+const app = document.getElementById('app');
+const state = { tab: 'overview', filter: 'pending', timer: null, pendingCount: 0 };
+
+// Build DOM nodes without ever putting server text into HTML.
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === 'class') el.className = v;
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) {
+    if (kid == null || kid === false) continue;
+    el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  }
+  return el;
+}
+const ugx = (n) => 'UGX ' + Number(n || 0).toLocaleString('en-US');
+const when = (iso) => iso ? new Date(iso).toLocaleString('en-GB', { timeZone: 'Africa/Kampala', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+const pill = (s) => h('span', { class: 'pill ' + s }, String(s).replace('_', ' '));
+const place = (p) => p.label || (p.lat.toFixed(4) + ', ' + p.lng.toFixed(4));
+const mapLink = (lat, lng, text) => h('a', { href: 'https://www.google.com/maps?q=' + lat + ',' + lng, target: '_blank', rel: 'noopener noreferrer' }, text);
+
+async function api(path, options = {}) {
+  const token = sessionStorage.getItem('token');
+  const res = await fetch(path, {
+    method: options.method || 'GET',
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  let data = {};
+  try { data = await res.json(); } catch { /* empty body */ }
+  if (res.status === 401 && token) { signOut(); throw new Error('Signed out'); }
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+function signOut() {
+  sessionStorage.removeItem('token');
+  clearInterval(state.timer);
+  renderLogin();
+}
+
+// ---------- login ----------
+function renderLogin(message) {
+  const err = h('div', { class: 'err' }, message || '');
+  const phone = h('input', { type: 'tel', placeholder: '0772 123456', autocomplete: 'username' });
+  const pass = h('input', { type: 'password', autocomplete: 'current-password' });
+  const form = h('form', { class: 'login' },
+    h('h1', {}, 'Smart Boda Admin'),
+    h('label', {}, 'Phone number', phone),
+    h('label', {}, 'Password', pass),
+    err,
+    h('button', { class: 'primary', type: 'submit' }, 'Sign in'));
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    try {
+      const r = await api('/api/auth/login', { method: 'POST', body: { phone: phone.value, password: pass.value } });
+      if (r.user.role !== 'admin') { err.textContent = 'This page is for Smart Boda admins only.'; return; }
+      sessionStorage.setItem('token', r.token);
+      renderShell();
+    } catch (ex) { err.textContent = ex.message; }
+  });
+  app.replaceChildren(form);
+}
+
+// ---------- shell ----------
+const TABS = [['overview', 'Overview'], ['captains', 'Captains'], ['live', 'Live'], ['trips', 'Trips'], ['settings', 'Settings']];
+
+function renderShell() {
+  const nav = h('nav', {}, TABS.map(([id, label]) => {
+    const b = h('button', { class: state.tab === id ? 'on' : '', onclick: () => { state.tab = id; renderShell(); } }, label,
+      id === 'captains' && state.pendingCount > 0 ? h('span', { class: 'badge' }, state.pendingCount) : null);
+    return b;
+  }));
+  const body = h('main', {});
+  app.replaceChildren(
+    h('header', {}, h('h1', {}, 'Smart Boda Admin'), h('button', { onclick: signOut }, 'Sign out')),
+    nav, body);
+  clearInterval(state.timer);
+  const views = { overview, captains, live, trips, settings };
+  const run = () => views[state.tab](body).catch((e) => { if (e.message !== 'Signed out') body.replaceChildren(h('div', { class: 'err' }, e.message)); });
+  run();
+  if (state.tab === 'live' || state.tab === 'overview') state.timer = setInterval(run, 6000);
+  refreshBadge();
+}
+
+async function refreshBadge() {
+  try {
+    const s = await api('/api/admin/stats');
+    if (s.captainsPending !== state.pendingCount) {
+      state.pendingCount = s.captainsPending;
+      const btn = document.querySelectorAll('nav button')[1];
+      if (btn) { btn.querySelector('.badge')?.remove(); if (s.captainsPending > 0) btn.append(h('span', { class: 'badge' }, s.captainsPending)); }
+    }
+  } catch { /* ignore */ }
+}
+
+// ---------- overview ----------
+async function overview(body) {
+  const s = await api('/api/admin/stats');
+  state.pendingCount = s.captainsPending;
+  const card = (n, l) => h('div', { class: 'card' }, h('div', { class: 'n' }, n), h('div', { class: 'l' }, l));
+  body.replaceChildren(
+    h('h2', {}, 'Overview'),
+    h('div', { class: 'cards' },
+      card(s.captainsPending, 'Captains waiting for approval'),
+      card(s.captainsOnline, 'Captains online now'),
+      card(s.tripsToday, 'Trips requested today'),
+      card(s.completedToday, 'Trips completed today'),
+      card(s.completedTotal, 'Trips completed, all time'),
+      card(ugx(s.grossTotal), 'Fares, all time'),
+      card(ugx(s.commissionTotal), 'Commission earned, all time'),
+      card(ugx(s.commissionTotal - s.settledTotal), 'Commission still owed by captains'),
+      card(s.captains, 'Captains registered'),
+      card(s.passengers, 'Passengers registered')));
+}
+
+// ---------- captains ----------
+async function captains(body) {
+  const q = state.filter === 'all' ? '' : '?status=' + state.filter;
+  const { captains: list } = await api('/api/admin/captains' + q);
+  const filters = h('div', { class: 'filters' }, ['pending', 'active', 'suspended', 'all'].map((f) =>
+    h('button', { class: state.filter === f ? 'on' : '', onclick: () => { state.filter = f; captains(body); } }, f[0].toUpperCase() + f.slice(1))));
+  const act = (label, cls, fn) => h('button', { class: 'act ' + cls, onclick: async (e) => {
+    e.target.disabled = true;
+    try { await fn(); await captains(body); refreshBadge(); } catch (ex) { alert(ex.message); e.target.disabled = false; }
+  } }, label);
+
+  const rows = list.map((c) => h('tr', {},
+    h('td', {}, h('strong', {}, c.name), h('div', { class: 'muted' }, c.phone)),
+    h('td', {}, c.bikePlate, h('div', { class: 'muted' }, c.bikeModel || '')),
+    h('td', {}, 'ID ' + c.nationalId, h('div', { class: 'muted' }, 'Permit ' + c.permitNumber)),
+    h('td', {}, c.stageName || ''),
+    h('td', {}, pill(c.status), c.online ? h('div', { class: 'muted' }, 'online') : null),
+    h('td', {}, c.trips + ' trips', h('div', { class: 'muted' }, c.avgRating == null ? 'no ratings' : c.avgRating + ' / 5')),
+    h('td', {}, ugx(c.commissionOwed)),
+    h('td', {},
+      c.status !== 'active' ? act('Approve', 'good', () => api('/api/admin/captains/' + c.id + '/approve', { method: 'POST', body: {} })) : null,
+      c.status !== 'suspended' ? act('Suspend', 'bad', () => { if (!confirm('Suspend ' + c.name + '?')) throw new Error('Cancelled'); return api('/api/admin/captains/' + c.id + '/suspend', { method: 'POST', body: {} }); }) : null,
+      c.commissionOwed > 0 ? act('Record payment', '', async () => {
+        const v = prompt('Commission paid by ' + c.name + ' (UGX). Owed: ' + c.commissionOwed);
+        if (!v) throw new Error('Cancelled');
+        const amount = Number.parseInt(v.replace(/[, ]/g, ''), 10);
+        const note = prompt('Note (for example MoMo reference)') || '';
+        await api('/api/admin/captains/' + c.id + '/settle', { method: 'POST', body: { amount, note } });
+      }) : null)));
+  body.replaceChildren(
+    h('h2', {}, 'Captains'), filters,
+    h('div', { class: 'panel' }, list.length === 0 ? h('div', { class: 'empty' }, 'No captains here yet.') :
+      h('table', {},
+        h('thead', {}, h('tr', {}, ['Captain', 'Bike', 'Documents to check', 'Stage', 'Status', 'Record', 'Owes', 'Actions'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, rows))));
+}
+
+// ---------- live ----------
+async function live(body) {
+  const { captains: cs, trips: ts } = await api('/api/admin/live');
+  body.replaceChildren(
+    h('h2', {}, 'Live'),
+    h('div', { class: 'panel' }, h('h3', {}, 'Captains online (' + cs.length + ')'),
+      cs.length === 0 ? h('div', { class: 'empty' }, 'Nobody is online.') :
+      h('table', {}, h('thead', {}, h('tr', {}, ['Captain', 'Bike', 'Busy', 'Last location'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, cs.map((c) => h('tr', {}, h('td', {}, c.name), h('td', {}, c.bikePlate), h('td', {}, c.onTrip ? 'On a trip' : 'Free'),
+          h('td', {}, mapLink(c.lat, c.lng, 'Open map'), ' ', h('span', { class: 'muted' }, when(c.locationAt)))))))),
+    h('div', { class: 'panel' }, h('h3', {}, 'Trips in progress (' + ts.length + ')'),
+      ts.length === 0 ? h('div', { class: 'empty' }, 'No active trips.') : tripTable(ts)));
+}
+
+// ---------- trips ----------
+function tripTable(list) {
+  return h('table', {},
+    h('thead', {}, h('tr', {}, ['When', 'Status', 'Passenger', 'Captain', 'From', 'To', 'Distance', 'Fare', 'Commission'].map((t) => h('th', {}, t)))),
+    h('tbody', {}, list.map((t) => h('tr', {},
+      h('td', {}, when(t.createdAt)), h('td', {}, pill(t.status)),
+      h('td', {}, t.passenger.name, h('div', { class: 'muted' }, t.passenger.phone)),
+      h('td', {}, t.captain ? [t.captain.name, h('div', { class: 'muted' }, t.captain.bikePlate)] : h('span', { class: 'muted' }, 'none')),
+      h('td', {}, mapLink(t.pickup.lat, t.pickup.lng, place(t.pickup))),
+      h('td', {}, mapLink(t.dropoff.lat, t.dropoff.lng, place(t.dropoff))),
+      h('td', {}, t.distanceKm + ' km', h('div', { class: 'muted' }, t.routeSource)),
+      h('td', {}, ugx(t.fare)), h('td', {}, ugx(t.commission))))));
+}
+
+async function trips(body) {
+  const { trips: list } = await api('/api/admin/trips?limit=100');
+  body.replaceChildren(h('h2', {}, 'Trips'),
+    h('div', { class: 'panel' }, list.length === 0 ? h('div', { class: 'empty' }, 'No trips yet.') : tripTable(list)));
+}
+
+// ---------- settings ----------
+async function settings(body) {
+  const s = await api('/api/admin/settings');
+  const status = h('span', { class: 'ok' });
+  const field = (label, value, step) => { const i = h('input', { type: 'number', step: step || '1', min: '0', value }); return [h('label', {}, label, i), i]; };
+  const f = {
+    baseFare: field('Base fare (UGX)', s.fare.baseFare), perKm: field('Per kilometre (UGX)', s.fare.perKm),
+    perMinute: field('Per minute (UGX)', s.fare.perMinute), minimumFare: field('Minimum fare (UGX)', s.fare.minimumFare),
+    commission: field('Commission (%)', Math.round(s.fare.commissionRate * 1000) / 10, '0.5'),
+    roundTo: field('Round fares to nearest (UGX)', s.fare.roundTo),
+    maxKm: field('Offer trips to captains within (km)', s.dispatch.maxKm, '0.1'), limit: field('Nearest captains offered each trip', s.dispatch.limit),
+    stale: field('Ignore locations older than (seconds)', s.dispatch.staleAfterSeconds), offer: field('Give up finding a captain after (seconds)', s.dispatch.offerSeconds),
+  };
+  const v = (k) => Number(f[k][1].value);
+  const form = h('form', { class: 'grid' }, Object.values(f).map((x) => x[0]),
+    h('div', {}, h('button', { class: 'primary', type: 'submit' }, 'Save settings'), ' ', status));
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault(); status.className = 'ok'; status.textContent = '';
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: {
+        fare: { baseFare: v('baseFare'), perKm: v('perKm'), perMinute: v('perMinute'), minimumFare: v('minimumFare'), commissionRate: v('commission') / 100, roundTo: v('roundTo') },
+        dispatch: { maxKm: v('maxKm'), limit: v('limit'), staleAfterSeconds: v('stale'), offerSeconds: v('offer') } } });
+      status.textContent = 'Saved. New trips use these numbers.';
+    } catch (ex) { status.className = 'err'; status.textContent = ex.message; }
+  });
+  body.replaceChildren(h('h2', {}, 'Fares and dispatch'),
+    h('div', { class: 'panel' }, h('p', { class: 'muted' }, 'Fare = base + distance + time, rounded, never below the minimum. Trips already requested keep the fare they were quoted.'), form));
+}
+
+// ---------- start ----------
+if (sessionStorage.getItem('token')) renderShell(); else renderLogin();
+</script>
+</body>
+</html>

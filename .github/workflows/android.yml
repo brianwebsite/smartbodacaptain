@@ -1,0 +1,114 @@
+name: Android apps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "scripts/prepare_android.py"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "scripts/prepare_android.py"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: passenger
+            label: Smart Boda
+          - app: captain
+            label: Smart Boda Captain
+    env:
+      # Set a repository variable API_BASE_URL (Settings > Secrets and variables >
+      # Actions > Variables) to point the apps at your real server.
+      API_BASE_URL: ${{ vars.API_BASE_URL || 'http://10.0.2.2:8080' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Check shared package
+        working-directory: packages/smartboda_core
+        run: |
+          flutter pub get
+          flutter analyze --no-fatal-infos
+
+      - name: Generate Android project
+        run: python3 scripts/prepare_android.py apps/${{ matrix.app }} ${{ matrix.app }} "${{ matrix.label }}" "$API_BASE_URL"
+
+      - name: Get packages
+        working-directory: apps/${{ matrix.app }}
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: apps/${{ matrix.app }}
+        run: flutter analyze --no-fatal-infos
+
+      - name: Build release APK
+        working-directory: apps/${{ matrix.app }}
+        run: flutter build apk --release --dart-define=API_BASE_URL="$API_BASE_URL"
+
+      - name: Name the APK
+        run: cp apps/${{ matrix.app }}/build/app/outputs/flutter-apk/app-release.apk smartboda-${{ matrix.app }}.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smartboda-${{ matrix.app }}-apk
+          path: smartboda-${{ matrix.app }}.apk
+          if-no-files-found: error
+
+  release:
+    name: Publish test build
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: apks
+          merge-multiple: true
+
+      - name: Move the android-latest tag to this commit
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git tag -f android-latest
+          git push -f origin android-latest
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: Android test build
+          prerelease: true
+          body: |
+            Latest Android test builds from main (commit ${{ github.sha }}).
+            These are debug-signed test builds, not for the Play Store.
+            Install both APKs on a phone and point them at your server
+            (repository variable API_BASE_URL).
+          files: apks/*.apk
