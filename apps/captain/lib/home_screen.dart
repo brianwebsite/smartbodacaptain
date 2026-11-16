@@ -5,7 +5,6 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:smartboda_core/smartboda_core.dart';
 
-import 'earnings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.session});
@@ -17,6 +16,9 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  int _ticks = 0;
+  Trip? _lastTrip;
+  final Set<String> _doneShown = {};
   ApiClient get _api => widget.session.api;
   AppUser get _user => widget.session.user!;
 
@@ -37,8 +39,9 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _online = _user.online;
-    _poll = Timer.periodic(const Duration(seconds: 4), (_) => _tick());
-    _beat = Timer.periodic(const Duration(seconds: 8), (_) => _sendLocation());
+    _poll = Timer.periodic(const Duration(seconds: 3), (_) => _tick());
+    // Often enough for the passenger to watch you come, and for the app to notice arrival.
+    _beat = Timer.periodic(const Duration(seconds: 4), (_) => _sendLocation());
     _tick();
     _locate();
   }
@@ -67,9 +70,17 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       return;
     }
+    _ticks++;
+    if (_ticks % 8 == 0) widget.session.refreshUser().catchError((_) {});
     try {
       final cur = await _api.get('/api/captain/current');
       final trip = cur['trip'] == null ? null : Trip.fromJson(cur['trip'] as Map<String, dynamic>);
+      final before = _lastTrip;
+      _lastTrip = trip;
+      if (trip == null && before != null && before.status == 'in_progress') {
+        // The phone ended the trip by itself when we reached the drop-off.
+        _afterTripEnded(before);
+      }
       List<Offer> offers = [];
       if (trip == null && _online) {
         final o = await _api.get('/api/captain/offers');
@@ -173,14 +184,30 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _complete(Trip t) async {
     await _act('/api/trips/${t.id}/complete');
     if (!mounted || _error != null) return;
-    await showDialog<void>(
+    _lastTrip = null;
+    await _showTripDone(t);
+  }
+
+  /// Looks up how a trip ended after the server finished it for us.
+  Future<void> _afterTripEnded(Trip before) async {
+    try {
+      final r = await _api.get('/api/trips/${before.id}');
+      final done = Trip.fromJson(r['trip'] as Map<String, dynamic>);
+      if (done.status == 'completed' && mounted) await _showTripDone(done);
+    } on ApiException {
+      // Not worth bothering the captain about.
+    }
+  }
+
+  /// What the captain should collect, and a quick rating of the passenger.
+  Future<void> _showTripDone(Trip t) async {
+    if (!_doneShown.add(t.id)) return;
+    widget.session.refreshUser().catchError((_) {});
+    await showModalBottomSheet<void>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Trip complete'),
-        content: Text('Collect ${ugx(t.fare)} cash from ${t.passenger?.name ?? 'the passenger'}.\n'
-            'You keep ${ugx(t.captainEarnings ?? t.fare)} after the Smart Boda fee.'),
-        actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Done'))],
-      ),
+      isScrollControlled: true,
+      isDismissible: false,
+      builder: (_) => _TripDoneSheet(api: _api, trip: t),
     );
   }
 
@@ -189,11 +216,11 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_here != null) out.add(vehicleMarker(_here!, _user.vehicleType, big: true));
     final t = _trip;
     if (t != null) {
-      out.add(pinMarker(LatLng(t.pickup.lat, t.pickup.lng), color: Colors.green));
+      out.add(pinMarker(LatLng(t.pickup.lat, t.pickup.lng), color: brandPrimary));
       out.add(pinMarker(LatLng(t.dropoff.lat, t.dropoff.lng), color: Colors.red));
     } else {
       for (final o in _offers) {
-        out.add(pinMarker(LatLng(o.trip.pickup.lat, o.trip.pickup.lng), color: bodaAmber));
+        out.add(pinMarker(LatLng(o.trip.pickup.lat, o.trip.pickup.lng), color: brandAccent));
       }
     }
     return out;
@@ -206,26 +233,6 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('Smart Boda Captain'),
         actions: [
           IconButton(tooltip: 'My location', icon: const Icon(Icons.my_location), onPressed: _locate),
-          PopupMenuButton<String>(
-            onSelected: (v) {
-              if (v == 'earnings') {
-                Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => EarningsScreen(api: _api)));
-              } else if (v == 'history') {
-                Navigator.of(context).push(
-                    MaterialPageRoute<void>(builder: (_) => HistoryScreen(api: _api, showEarnings: true)));
-              } else if (v == 'logout') {
-                widget.session.logout();
-              }
-            },
-            itemBuilder: (_) => [
-              PopupMenuItem(
-                  enabled: false,
-                  child: Text('${_user.name}\n${vehicleById(_user.vehicleType).label} · ${_user.bikePlate ?? ''}')),
-              const PopupMenuItem(value: 'earnings', child: Text('Earnings')),
-              const PopupMenuItem(value: 'history', child: Text('Trip history')),
-              const PopupMenuItem(value: 'logout', child: Text('Sign out')),
-            ],
-          ),
         ],
       ),
       body: !_approved ? _pending(context) : _main(context),
@@ -240,7 +247,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(suspended ? Icons.block : Icons.hourglass_top, size: 64, color: bodaGreen),
+            Icon(suspended ? Icons.block : Icons.hourglass_top, size: 64, color: brandPrimary),
             const SizedBox(height: 16),
             Text(suspended ? 'Account suspended' : 'Waiting for approval',
                 style: Theme.of(context).textTheme.headlineSmall),
@@ -287,6 +294,8 @@ class _HomeScreenState extends State<HomeScreen> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        StandingBanner(_user.standing),
+        _debtBanner(),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: Text(_online ? 'You are online' : 'You are offline',
@@ -299,8 +308,41 @@ class _HomeScreenState extends State<HomeScreen> {
           Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
         if (_online && _offers.isEmpty)
           const Padding(padding: EdgeInsets.only(top: 8), child: LinearProgressIndicator()),
-        for (final o in _offers) _OfferCard(offer: o, busy: _busy, onAccept: () => _act('/api/trips/${o.trip.id}/accept'), onDecline: () => _act('/api/trips/${o.trip.id}/decline')),
+        for (final o in _offers) FadeSlideIn(child: _OfferCard(offer: o, busy: _busy, onAccept: () => _act('/api/trips/${o.trip.id}/accept'), onDecline: () => _act('/api/trips/${o.trip.id}/decline'))),
       ],
+    );
+  }
+
+  /// Warns when the fee owed to Smart Boda is getting close to the limit, or past it.
+  Widget _debtBanner() {
+    final owed = _user.commissionOwed;
+    final limit = _user.debtLimit;
+    if (limit <= 0 || owed <= limit * 0.6) return const SizedBox.shrink();
+    final over = owed > limit;
+    return FadeSlideIn(
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: (over ? const Color(0xFFB3261E) : const Color(0xFFB26A00)).withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: over ? const Color(0xFFB3261E) : const Color(0xFFB26A00)),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.payments_outlined, color: over ? const Color(0xFFB3261E) : const Color(0xFFB26A00)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                over
+                    ? 'You owe Smart Boda ${ugx(owed)}. Pay it to go online and take trips again.'
+                    : 'You owe Smart Boda ${ugx(owed)} of your ${ugx(limit)} limit. Pay soon so you can keep taking trips.',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -313,17 +355,17 @@ class _HomeScreenState extends State<HomeScreen> {
         next = 'arrived';
         break;
       case 'arrived':
-        label = 'Waiting for passenger';
+        label = t.isDelivery ? 'Collect the item' : 'Waiting for passenger';
         next = 'start';
         break;
       default:
-        label = 'Take the passenger to the drop-off';
+        label = t.isDelivery ? 'Deliver the item' : 'Take the passenger to the drop-off';
         next = 'complete';
     }
     final buttonText = {
       'arrived': "I've arrived",
-      'start': 'Start trip',
-      'complete': 'Complete trip',
+      'start': t.isDelivery ? 'Start delivery' : 'Start trip',
+      'complete': t.isDelivery ? 'Delivered' : 'Complete trip',
     }[next]!;
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -341,7 +383,7 @@ class _HomeScreenState extends State<HomeScreen> {
               Row(
                 children: [
                   CircleAvatar(
-                    backgroundColor: bodaGreen,
+                    backgroundColor: brandPrimary,
                     child: Text(
                       (t.passenger?.name ?? '?').trim().isEmpty ? '?' : t.passenger!.name.trim()[0].toUpperCase(),
                       style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -352,7 +394,17 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(t.passenger?.name ?? 'Passenger', style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+                        Row(children: [
+                          Flexible(
+                            child: Text(t.passenger?.name ?? 'Passenger',
+                                style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis),
+                          ),
+                          if (t.passenger?.rating != null) ...[
+                            const SizedBox(width: 8),
+                            const Icon(Icons.star, size: 16, color: brandAccent),
+                            Text(t.passenger!.rating!.toStringAsFixed(1)),
+                          ],
+                        ]),
                         Text(t.status == 'in_progress' ? 'To: ${t.dropoff.text}' : 'Pickup: ${t.pickup.text}',
                             maxLines: 2, overflow: TextOverflow.ellipsis),
                       ],
@@ -365,7 +417,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: t.passenger == null ? null : () => callPhone(context, t.passenger!.phone),
+                      onPressed: t.passenger?.phone == null ? null : () => callPhone(context, t.passenger!.phone!),
                       icon: const Icon(Icons.call),
                       label: const Text('Call'),
                     ),
@@ -387,8 +439,48 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
+        if (t.isDelivery)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(color: brandSurface, borderRadius: BorderRadius.circular(12)),
+              child: Row(
+                children: [
+                  const Icon(Icons.inventory_2_outlined, color: brandPrimary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(t.deliveryItem ?? 'Item', style: const TextStyle(fontWeight: FontWeight.w700)),
+                        Text('Receiver: ${t.receiverName ?? ''}'),
+                      ],
+                    ),
+                  ),
+                  if (t.receiverPhone != null)
+                    IconButton(
+                      tooltip: 'Call receiver',
+                      icon: const Icon(Icons.call),
+                      onPressed: () => callPhone(context, t.receiverPhone!),
+                    ),
+                ],
+              ),
+            ),
+          ),
         const SizedBox(height: 8),
-        Text('${ugx(t.fare)} cash · you keep ${ugx(t.captainEarnings ?? t.fare)} · ${t.distanceKm} km'),
+        Text(
+          t.paymentMethod == 'wallet'
+              ? '${ugx(t.fare)} paid from the passenger wallet · ${ugx(t.captainEarnings ?? t.fare)} goes to your wallet · ${t.distanceKm} km'
+              : '${ugx(t.fare)} cash · you keep ${ugx(t.captainEarnings ?? t.fare)} · ${t.distanceKm} km',
+        ),
+        if (t.nightPercent > 0)
+          Text('Night fare +${t.nightPercent}%', style: const TextStyle(color: brandPrimary, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        const Text(
+          'Your phone also starts and finishes the trip by itself when you reach the pickup, drive off, and reach the drop-off.',
+          style: TextStyle(fontSize: 12, color: Colors.black54),
+        ),
         if (_error != null)
           Padding(
             padding: const EdgeInsets.only(top: 8),
@@ -429,21 +521,28 @@ class _OfferCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('${ugx(t.captainEarnings ?? t.fare)} for you · ${t.distanceKm} km trip',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+            Row(
+              children: [
+                if (t.isDelivery) const Padding(padding: EdgeInsets.only(right: 6), child: Icon(Icons.inventory_2_outlined, size: 20, color: brandPrimary)),
+                Expanded(
+                  child: Text('${t.isDelivery ? 'Delivery · ' : ''}${ugx(t.captainEarnings ?? t.fare)} for you · ${t.distanceKm} km',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+                ),
+              ],
+            ),
             const SizedBox(height: 4),
             Row(children: [
-              const Icon(Icons.trip_origin, size: 16, color: Colors.green),
+              const Icon(Icons.trip_origin, size: 16, color: brandPrimary),
               const SizedBox(width: 6),
               Expanded(child: Text(t.pickup.text, maxLines: 1, overflow: TextOverflow.ellipsis)),
             ]),
             Row(children: [
-              const Icon(Icons.stop, size: 16, color: Colors.red),
+              const Icon(Icons.location_on, size: 16, color: Colors.red),
               const SizedBox(width: 6),
               Expanded(child: Text(t.dropoff.text, maxLines: 1, overflow: TextOverflow.ellipsis)),
             ]),
             const SizedBox(height: 4),
-            Text('Pickup is ${offer.distanceToPickupKm} km from you · about ${etaMinutes(offer.distanceToPickupKm)} min · fare ${ugx(t.fare)} cash'),
+            Text('Pickup is ${offer.distanceToPickupKm} km from you · about ${etaMinutes(offer.distanceToPickupKm)} min · fare ${ugx(t.fare)} ${t.paymentMethod == 'wallet' ? 'from wallet' : 'cash'}${t.nightPercent > 0 ? ' · night +${t.nightPercent}%' : ''}'),
             const SizedBox(height: 8),
             Row(
               children: [
@@ -454,6 +553,73 @@ class _OfferCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _TripDoneSheet extends StatefulWidget {
+  const _TripDoneSheet({required this.api, required this.trip});
+
+  final ApiClient api;
+  final Trip trip;
+
+  @override
+  State<_TripDoneSheet> createState() => _TripDoneSheetState();
+}
+
+class _TripDoneSheetState extends State<_TripDoneSheet> {
+  int _stars = 5;
+  bool _busy = false;
+
+  Future<void> _send() async {
+    setState(() => _busy = true);
+    try {
+      await widget.api.post('/api/trips/${widget.trip.id}/rate-passenger', {'rating': _stars});
+    } on ApiException {
+      // A missed rating is not worth blocking the captain.
+    }
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = widget.trip;
+    final wallet = t.paymentMethod == 'wallet';
+    final mine = ugx(t.captainEarnings ?? t.fare);
+    return Padding(
+      padding: EdgeInsets.fromLTRB(24, 24, 24, 24 + MediaQuery.of(context).viewInsets.bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Icon(Icons.check_circle, color: Colors.green, size: 56),
+          const SizedBox(height: 8),
+          Text(t.isDelivery ? 'Delivery complete' : 'Trip complete',
+              textAlign: TextAlign.center, style: Theme.of(context).textTheme.headlineSmall),
+          const SizedBox(height: 8),
+          Text(
+            wallet
+                ? 'Already paid from the passenger wallet. $mine was added to your wallet. Do not collect cash.'
+                : 'Collect ${ugx(t.fare)} cash from ${t.passenger?.name ?? 'the passenger'}.\nYou keep $mine after the Smart Boda fee.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 16),
+          Text('Rate ${t.passenger?.name ?? 'the passenger'}', textAlign: TextAlign.center),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              for (var i = 1; i <= 5; i++)
+                IconButton(
+                  iconSize: 38,
+                  onPressed: () => setState(() => _stars = i),
+                  icon: Icon(i <= _stars ? Icons.star : Icons.star_border, color: brandAccent),
+                ),
+            ],
+          ),
+          FilledButton(onPressed: _busy ? null : _send, child: const Text('Done')),
+        ],
       ),
     );
   }

@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:smartboda_core/smartboda_core.dart';
 
 class EarningsScreen extends StatefulWidget {
-  const EarningsScreen({super.key, required this.api});
+  const EarningsScreen({super.key, required this.api, this.embedded = false});
 
   final ApiClient api;
+  final bool embedded;
 
   @override
   State<EarningsScreen> createState() => _EarningsScreenState();
@@ -33,8 +34,8 @@ class _EarningsScreenState extends State<EarningsScreen> {
   Widget build(BuildContext context) {
     final e = _e;
     return Scaffold(
-      appBar: AppBar(title: const Text('Earnings')),
-      body: RefreshIndicator(
+      appBar: widget.embedded ? null : AppBar(title: const Text('Earnings')),
+      body: SafeArea(child: RefreshIndicator(
         onRefresh: _load,
         child: e == null
             ? ListView(children: [
@@ -46,6 +47,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
             : ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
+                  StandingBanner(e.standing),
                   Card(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
@@ -56,7 +58,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                               style: Theme.of(context)
                                   .textTheme
                                   .headlineLarge
-                                  ?.copyWith(fontWeight: FontWeight.bold, color: bodaGreen)),
+                                  ?.copyWith(fontWeight: FontWeight.bold, color: brandPrimary)),
                           Text('${e.trips} trips · ${ugx(e.gross)} collected · ${ugx(e.commission)} fee'),
                         ],
                       ),
@@ -67,7 +69,19 @@ class _EarningsScreenState extends State<EarningsScreen> {
                     child: ListTile(
                       leading: const Icon(Icons.account_balance_wallet),
                       title: Text('Fee to pay Smart Boda: ${ugx(e.commissionOwed)}'),
-                      subtitle: const Text('Fees from cash trips. Pay as agreed with Smart Boda.'),
+                      subtitle: Text(e.debtLimit > 0
+                          ? 'Fees from cash trips. If this goes above ${ugx(e.debtLimit)} you cannot go online until you pay. Wallet trips pay it off automatically.'
+                          : 'Fees from cash trips. Pay as agreed with Smart Boda.'),
+                    ),
+                  ),
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.savings_outlined),
+                      title: Text('Wallet: ${ugx(e.walletBalance)}'),
+                      subtitle: const Text('Earned from trips passengers paid by wallet. Smart Boda pays this out to you.'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(builder: (_) => WalletScreen(api: widget.api, isCaptain: true))),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -81,7 +95,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                   if (e.byDay.isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('No trips yet.')),
                 ],
               ),
-      ),
+      )),
     );
   }
 }

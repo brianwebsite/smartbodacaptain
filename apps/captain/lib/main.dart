@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:smartboda_core/smartboda_core.dart';
 
-import 'home_screen.dart';
+import 'shell.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -51,7 +51,7 @@ class _CaptainAppState extends State<CaptainApp> {
           if (_session.user == null) {
             return AuthScreen(session: _session, appTitle: 'Smart Boda Captain');
           }
-          return HomeScreen(session: _session);
+          return Shell(session: _session);
         },
       ),
     );

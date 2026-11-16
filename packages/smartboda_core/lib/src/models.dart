@@ -21,39 +21,58 @@ class AppUser {
     required this.id,
     required this.role,
     required this.name,
-    required this.phone,
     required this.status,
+    this.phone,
     this.email,
     this.bikePlate,
     this.bikeModel,
     this.vehicleType = 'boda',
     this.online = false,
+    this.walletBalance = 0,
+    this.walletAvailable = 0,
+    this.commissionOwed = 0,
+    this.debtLimit = 0,
+    this.standing = const Standing(),
   });
 
   final String id;
   final String role;
   final String name;
-  final String phone;
+  final String? phone;
   final String? email;
   final String status;
   final String? bikePlate;
   final String? bikeModel;
   final String vehicleType;
   final bool online;
+  final int walletBalance;
+  final int walletAvailable;
+  final int commissionOwed;
+  final int debtLimit;
+  final Standing standing;
+
+  /// What to show for contact details: phone, else email.
+  String get contact => phone ?? email ?? '';
 
   factory AppUser.fromJson(Map<String, dynamic> j) {
     final cap = j['captain'] as Map<String, dynamic>?;
+    final w = j['wallet'] as Map<String, dynamic>?;
     return AppUser(
       id: j['id'] as String,
       role: j['role'] as String,
       name: j['name'] as String,
-      phone: j['phone'] as String,
+      phone: j['phone'] as String?,
       email: j['email'] as String?,
       status: j['status'] as String,
       bikePlate: cap?['bikePlate'] as String?,
       bikeModel: cap?['bikeModel'] as String?,
       vehicleType: (cap?['vehicleType'] as String?) ?? 'boda',
       online: (cap?['online'] as bool?) ?? false,
+      walletBalance: (w?['balance'] as num?)?.toInt() ?? 0,
+      walletAvailable: (w?['available'] as num?)?.toInt() ?? 0,
+      commissionOwed: (j['commissionOwed'] as num?)?.toInt() ?? 0,
+      debtLimit: (j['debtLimit'] as num?)?.toInt() ?? 0,
+      standing: Standing.fromJson(j['standing'] as Map<String, dynamic>?),
     );
   }
 }
@@ -111,13 +130,19 @@ class CaptainInfo {
 }
 
 class PassengerInfo {
-  const PassengerInfo({required this.name, required this.phone});
+  const PassengerInfo({required this.name, this.phone, this.rating, this.ratingCount = 0});
 
   final String name;
-  final String phone;
+  final String? phone;
+  final double? rating;
+  final int ratingCount;
 
-  factory PassengerInfo.fromJson(Map<String, dynamic> j) =>
-      PassengerInfo(name: j['name'] as String, phone: j['phone'] as String);
+  factory PassengerInfo.fromJson(Map<String, dynamic> j) => PassengerInfo(
+        name: j['name'] as String,
+        phone: j['phone'] as String?,
+        rating: (j['rating'] as num?)?.toDouble(),
+        ratingCount: (j['ratingCount'] as num?)?.toInt() ?? 0,
+      );
 }
 
 class Trip {
@@ -141,6 +166,13 @@ class Trip {
     this.commission,
     this.captainEarnings,
     this.rating,
+    this.kind = 'ride',
+    this.deliveryItem,
+    this.receiverName,
+    this.receiverPhone,
+    this.nightPercent = 0,
+    this.autoStarted = false,
+    this.passengerRating,
   });
 
   final String id;
@@ -162,6 +194,15 @@ class Trip {
   final int? commission;
   final int? captainEarnings;
   final int? rating;
+  final String kind;
+  final String? deliveryItem;
+  final String? receiverName;
+  final String? receiverPhone;
+  final int nightPercent;
+  final bool autoStarted;
+  final int? passengerRating;
+
+  bool get isDelivery => kind == 'delivery';
 
   bool get isFinal => status == 'completed' || status == 'cancelled' || status == 'no_captain';
 
@@ -189,6 +230,13 @@ class Trip {
         commission: (j['commission'] as num?)?.toInt(),
         captainEarnings: (j['captainEarnings'] as num?)?.toInt(),
         rating: (j['rating'] as num?)?.toInt(),
+        kind: (j['kind'] as String?) ?? 'ride',
+        deliveryItem: j['deliveryItem'] as String?,
+        receiverName: j['receiverName'] as String?,
+        receiverPhone: j['receiverPhone'] as String?,
+        nightPercent: (j['nightPercent'] as num?)?.toInt() ?? 0,
+        autoStarted: (j['autoStarted'] as bool?) ?? false,
+        passengerRating: (j['passengerRating'] as num?)?.toInt(),
       );
 }
 
@@ -216,8 +264,12 @@ class FareEstimate {
     required this.durationMin,
     required this.source,
     required this.options,
+    this.nightPercent = 0,
+    this.walletAvailable = 0,
   });
 
+  final int nightPercent;
+  final int walletAvailable;
   final double distanceKm;
   final int durationMin;
   final String source;
@@ -236,6 +288,8 @@ class FareEstimate {
         distanceKm: (j['distanceKm'] as num).toDouble(),
         durationMin: (j['durationMin'] as num).toInt(),
         source: j['source'] as String,
+        nightPercent: (j['nightPercent'] as num?)?.toInt() ?? 0,
+        walletAvailable: ((j['wallet'] as Map<String, dynamic>?)?['available'] as num?)?.toInt() ?? 0,
         options: (j['options'] as List<dynamic>)
             .map((o) => FareOption.fromJson(o as Map<String, dynamic>))
             .toList(),
@@ -342,8 +396,14 @@ class Earnings {
     required this.net,
     required this.commissionOwed,
     required this.byDay,
+    this.debtLimit = 0,
+    this.walletBalance = 0,
+    this.standing = const Standing(),
   });
 
+  final int debtLimit;
+  final int walletBalance;
+  final Standing standing;
   final int days;
   final int trips;
   final int gross;
@@ -361,9 +421,95 @@ class Earnings {
       commission: (t['commission'] as num).toInt(),
       net: (t['net'] as num).toInt(),
       commissionOwed: (j['commissionOwed'] as num).toInt(),
+      debtLimit: (j['debtLimit'] as num?)?.toInt() ?? 0,
+      walletBalance: (j['walletBalance'] as num?)?.toInt() ?? 0,
+      standing: Standing.fromJson(j['standing'] as Map<String, dynamic>?),
       byDay: (j['byDay'] as List<dynamic>)
           .map((d) => DayEarning.fromJson(d as Map<String, dynamic>))
           .toList(),
     );
   }
+}
+
+/// How the person stands on Smart Boda's fair-play rules.
+class Standing {
+  const Standing({this.level = 'ok', this.cancels = 0, this.message});
+
+  /// ok, warning, slowed, paused (captains) or blocked (passengers).
+  final String level;
+  final int cancels;
+  final String? message;
+
+  bool get isOk => level == 'ok';
+
+  factory Standing.fromJson(Map<String, dynamic>? j) => j == null
+      ? const Standing()
+      : Standing(
+          level: (j['level'] as String?) ?? 'ok',
+          cancels: (j['cancels'] as num?)?.toInt() ?? 0,
+          message: j['message'] as String?,
+        );
+}
+
+class WalletEntry {
+  const WalletEntry({required this.amount, required this.kind, required this.createdAt, this.note});
+
+  final int amount;
+  final String kind;
+  final String? note;
+  final DateTime createdAt;
+
+  String get label {
+    switch (kind) {
+      case 'topup':
+        return 'Money added';
+      case 'admin_credit':
+        return 'Money added by Smart Boda';
+      case 'admin_debit':
+        return 'Taken back by Smart Boda';
+      case 'trip_payment':
+        return 'Paid for a trip';
+      case 'trip_earning':
+        return 'Earned from a trip';
+      case 'commission_netted':
+        return 'Smart Boda fee from earlier cash trips';
+      case 'payout':
+        return 'Paid out to you';
+      default:
+        return kind;
+    }
+  }
+
+  factory WalletEntry.fromJson(Map<String, dynamic> j) => WalletEntry(
+        amount: (j['amount'] as num).toInt(),
+        kind: j['kind'] as String,
+        note: j['note'] as String?,
+        createdAt: DateTime.parse(j['createdAt'] as String),
+      );
+}
+
+class WalletInfo {
+  const WalletInfo({
+    required this.balance,
+    required this.held,
+    required this.available,
+    required this.entries,
+    required this.topupAvailable,
+  });
+
+  final int balance;
+  final int held;
+  final int available;
+  final List<WalletEntry> entries;
+  final bool topupAvailable;
+
+  factory WalletInfo.fromJson(Map<String, dynamic> j) => WalletInfo(
+        balance: (j['balance'] as num).toInt(),
+        held: (j['held'] as num).toInt(),
+        available: (j['available'] as num).toInt(),
+        topupAvailable: (j['topupAvailable'] as bool?) ?? false,
+        entries: (j['entries'] as List<dynamic>)
+            .map((e) => WalletEntry.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
 }

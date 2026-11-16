@@ -22,7 +22,7 @@ class Stars extends StatelessWidget {
           Icon(
             value >= i - 0.25 ? Icons.star : (value >= i - 0.75 ? Icons.star_half : Icons.star_border),
             size: size,
-            color: bodaAmber,
+            color: brandAccent,
           ),
       ],
     );
@@ -61,7 +61,7 @@ class _CaptainDetails extends StatelessWidget {
               children: [
                 CircleAvatar(
                   radius: 32,
-                  backgroundColor: bodaGreen,
+                  backgroundColor: brandPrimary,
                   child: Text(
                     c.name.isEmpty ? '?' : c.name.trim()[0].toUpperCase(),
                     style: const TextStyle(fontSize: 28, color: Colors.white, fontWeight: FontWeight.bold),
@@ -117,7 +117,7 @@ class _CaptainDetails extends StatelessWidget {
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       decoration: BoxDecoration(
-                        color: bodaAmber,
+                        color: brandAccent,
                         borderRadius: BorderRadius.circular(6),
                         border: Border.all(color: Colors.black87, width: 1.5),
                       ),

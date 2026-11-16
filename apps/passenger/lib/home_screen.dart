@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:smartboda_core/smartboda_core.dart';
@@ -8,21 +9,30 @@ import 'package:smartboda_core/smartboda_core.dart';
 import 'search_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, required this.session});
+  const HomeScreen({super.key, required this.session, this.onOpenWallet});
 
   final Session session;
+  final VoidCallback? onOpenWallet;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
   ApiClient get _api => widget.session.api;
 
   final MapController _map = MapController();
   Timer? _tripTimer;
   Timer? _nearbyTimer;
   Timer? _meTimer;
+  Timer? _bannerTimer;
+  late final SmoothPoint _captainPoint = SmoothPoint(
+    vsync: this,
+    duration: const Duration(milliseconds: 3200),
+    onChange: () {
+      if (mounted) setState(() {});
+    },
+  );
 
   // where I am, and the trip I am planning
   LatLng? _me;
@@ -35,6 +45,11 @@ class _HomeScreenState extends State<HomeScreen> {
   FareEstimate? _estimate;
   bool _estimating = false;
   String _vehicle = 'boda';
+  String _kind = 'ride'; // 'ride' or 'delivery'
+  String _payment = 'cash'; // 'cash' or 'wallet'
+  final _item = TextEditingController();
+  final _receiverName = TextEditingController();
+  final _receiverPhone = TextEditingController();
   bool _requesting = false;
   String? _error;
 
@@ -46,15 +61,23 @@ class _HomeScreenState extends State<HomeScreen> {
   final Set<String> _skippedRatings = {};
   String? _fittedFor;
 
+  // following the captain: how far away they were at first, and what we already told the passenger
+  String? _legKey;
+  double _legStartKm = 0;
+  double? _legKm;
+  String? _lastStatus;
+  int _lastBucket = 0;
+  String? _banner;
+
   @override
   void initState() {
     super.initState();
     _findMe();
     _refreshTrip();
     _loadNearby();
-    _tripTimer = Timer.periodic(const Duration(seconds: 4), (_) => _refreshTrip());
+    _tripTimer = Timer.periodic(const Duration(seconds: 3), (_) => _refreshTrip());
     _nearbyTimer = Timer.periodic(const Duration(seconds: 7), (_) => _loadNearby());
-    _meTimer = Timer.periodic(const Duration(seconds: 10), (_) => _updateMe());
+    _meTimer = Timer.periodic(const Duration(seconds: 12), (_) => _updateMe());
   }
 
   @override
@@ -62,6 +85,11 @@ class _HomeScreenState extends State<HomeScreen> {
     _tripTimer?.cancel();
     _nearbyTimer?.cancel();
     _meTimer?.cancel();
+    _bannerTimer?.cancel();
+    _captainPoint.dispose();
+    _item.dispose();
+    _receiverName.dispose();
+    _receiverPhone.dispose();
     super.dispose();
   }
 
@@ -83,8 +111,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadNearby();
   }
 
-  /// Quietly keeps the blue dot (and an automatic pickup) up to date.
+  /// Quietly keeps the blue dot (and an automatic pickup) up to date, and the account details fresh.
   Future<void> _updateMe() async {
+    widget.session.refreshUser().catchError((_) {});
     if (_trip != null) return;
     final me = await currentLatLng();
     if (!mounted || me == null) return;
@@ -140,7 +169,7 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       _map.fitCamera(CameraFit.bounds(
         bounds: LatLngBounds.fromPoints(points),
-        padding: const EdgeInsets.fromLTRB(48, 200, 48, 380),
+        padding: const EdgeInsets.fromLTRB(48, 120, 48, 420),
         maxZoom: 17,
       ));
     } catch (_) {
@@ -167,12 +196,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  ({int count, int? etaMin}) _summary(String vehicleType) {
-    final mine = _nearby.where((d) => d.vehicleType == vehicleType).toList();
-    if (mine.isEmpty) return (count: 0, etaMin: null);
-    return (count: mine.length, etaMin: mine.map((d) => d.etaMin).reduce((a, b) => a < b ? a : b));
-  }
-
   // ---------- choosing places ----------
 
   Future<void> _choose({required bool forPickup}) async {
@@ -181,7 +204,7 @@ class _HomeScreenState extends State<HomeScreen> {
       MaterialPageRoute(
         builder: (_) => SearchScreen(
           api: _api,
-          title: forPickup ? 'Where should we pick you up?' : 'Where are you going?',
+          title: forPickup ? 'Where should we pick you up?' : (_kind == 'delivery' ? 'Where should we deliver?' : 'Where are you going?'),
           near: _me ?? (_pickup == null ? null : LatLng(_pickup!.lat, _pickup!.lng)),
           here: here,
         ),
@@ -220,6 +243,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final r = await _api.post('/api/fare/estimate', {
         'pickup': {'lat': pu.lat, 'lng': pu.lng},
         'dropoff': {'lat': dr.lat, 'lng': dr.lng},
+        'kind': _kind,
       });
       if (mounted) setState(() => _estimate = FareEstimate.fromJson(r));
     } on ApiException catch (e) {
@@ -227,6 +251,16 @@ class _HomeScreenState extends State<HomeScreen> {
     } finally {
       if (mounted) setState(() => _estimating = false);
     }
+  }
+
+  void _setKind(String kind) {
+    if (kind == _kind) return;
+    setState(() {
+      _kind = kind;
+      _estimate = null;
+      _error = null;
+    });
+    if (_dropoff != null) _getEstimate();
   }
 
   void _clearDestination() {
@@ -243,6 +277,12 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _request() async {
     final pu = _pickup, dr = _dropoff;
     if (pu == null || dr == null) return;
+    if (_kind == 'delivery') {
+      if (_item.text.trim().length < 2 || _receiverName.text.trim().length < 2 || _receiverPhone.text.trim().length < 9) {
+        setState(() => _error = 'Tell us what you are sending, and the name and phone number of who receives it.');
+        return;
+      }
+    }
     setState(() {
       _requesting = true;
       _error = null;
@@ -254,9 +294,16 @@ class _HomeScreenState extends State<HomeScreen> {
         'pickupLabel': pu.label,
         'dropoffLabel': dr.label,
         'vehicleType': _vehicle,
-        'paymentMethod': 'cash',
+        'paymentMethod': _payment,
+        'kind': _kind,
+        if (_kind == 'delivery') ...{
+          'deliveryItem': _item.text.trim(),
+          'receiverName': _receiverName.text.trim(),
+          'receiverPhone': _receiverPhone.text.trim(),
+        },
       });
       if (mounted) {
+        HapticFeedback.mediumImpact();
         setState(() {
           _trip = Trip.fromJson(r['trip'] as Map<String, dynamic>);
           _estimate = null;
@@ -293,7 +340,14 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       setState(() => _trip = shown);
       if (shown != null) _followTrip(shown);
+      if (shown == null) {
+        _captainPoint.moveTo(null);
+        _legKey = null;
+        _legKm = null;
+        _lastStatus = null;
+      }
       if (t == null && unrated != null && !_ratingOpen && !_skippedRatings.contains(unrated.id)) {
+        widget.session.refreshUser().catchError((_) {});
         _openRating(unrated);
       }
     } on ApiException {
@@ -301,15 +355,78 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Frames the map for the current stage of the trip, once per stage.
+  /// Shows a short message at the top of the map and buzzes the phone.
+  void _announce(String message) {
+    HapticFeedback.mediumImpact();
+    _bannerTimer?.cancel();
+    setState(() => _banner = message);
+    _bannerTimer = Timer(const Duration(seconds: 6), () {
+      if (mounted) setState(() => _banner = null);
+    });
+  }
+
+  /// Keeps the captain's marker gliding, works out the distance left, and says out loud
+  /// when something changes (accepted, closer, arrived, started).
   void _followTrip(Trip t) {
     final c = t.captain;
     final cap = (c?.lat != null && c?.lng != null) ? LatLng(c!.lat!, c.lng!) : null;
+    _captainPoint.moveTo(cap);
+    final pickup = LatLng(t.pickup.lat, t.pickup.lng);
+    final dropoff = LatLng(t.dropoff.lat, t.dropoff.lng);
+
+    // distance left on the current leg
+    double? leg;
+    String? stage;
+    if (cap != null && (t.status == 'accepted' || t.status == 'arrived')) {
+      leg = kmBetween(cap, pickup);
+      stage = 'pickup';
+    } else if (cap != null && t.status == 'in_progress') {
+      leg = kmBetween(cap, dropoff);
+      stage = 'dropoff';
+    }
+    _legKm = leg;
+    if (leg != null) {
+      final key = '${t.id}-$stage';
+      if (key != _legKey) {
+        _legKey = key;
+        _legStartKm = leg;
+        _lastBucket = 0;
+      } else if (leg > _legStartKm) {
+        _legStartKm = leg; // the captain had to go around
+      }
+    }
+
+    if (t.status != _lastStatus) {
+      final first = _lastStatus == null;
+      _lastStatus = t.status;
+      if (!(first && t.status == 'requested')) {
+        switch (t.status) {
+          case 'accepted':
+            _announce('${c?.name ?? 'A captain'} accepted your ${t.isDelivery ? 'delivery' : 'ride'} and is coming');
+          case 'arrived':
+            _announce('Your captain has arrived');
+          case 'in_progress':
+            _announce(t.isDelivery ? 'Your delivery is on its way' : 'Your trip has started');
+          case 'cancelled':
+            _announce('The trip was cancelled');
+        }
+      }
+    } else if (t.status == 'accepted' && leg != null) {
+      final bucket = leg <= 0.2 ? 3 : (leg <= 0.5 ? 2 : (leg <= 1 ? 1 : 0));
+      if (bucket > _lastBucket) {
+        _lastBucket = bucket;
+        _announce(switch (bucket) {
+          1 => 'Your captain is less than 1 km away',
+          2 => 'Your captain is about ${distanceText(leg)} away',
+          _ => 'Your captain is almost there',
+        });
+      }
+    }
+
+    // frame the map once per stage
     final key = '${t.id}-${t.status}-${cap != null}';
     if (key == _fittedFor) return;
     _fittedFor = key;
-    final pickup = LatLng(t.pickup.lat, t.pickup.lng);
-    final dropoff = LatLng(t.dropoff.lat, t.dropoff.lng);
     switch (t.status) {
       case 'accepted':
       case 'arrived':
@@ -325,7 +442,20 @@ class _HomeScreenState extends State<HomeScreen> {
     final reason = await askCancelReason(context, captain: false);
     if (reason == null) return;
     try {
-      await _api.post('/api/trips/${t.id}/cancel', {'reason': reason});
+      final r = await _api.post('/api/trips/${t.id}/cancel', {'reason': reason});
+      widget.session.applyUserJson(r['user']);
+      final standing = widget.session.user?.standing;
+      if (mounted && standing != null && !standing.isOk && standing.message != null) {
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            icon: const Icon(Icons.warning_amber_rounded, color: Color(0xFFB26A00), size: 40),
+            title: const Text('Please be careful'),
+            content: Text(standing.message!),
+            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('I understand'))],
+          ),
+        );
+      }
       await _refreshTrip();
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
@@ -364,6 +494,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _estimate = null;
       _fittedFor = null;
     });
+    _captainPoint.moveTo(null);
     if (_me != null) _moveMap(_me!, 16);
     _loadNearby();
   }
@@ -374,17 +505,17 @@ class _HomeScreenState extends State<HomeScreen> {
     final out = <Marker>[];
     final t = _trip;
     if (t != null) {
-      out.add(pinMarker(LatLng(t.pickup.lat, t.pickup.lng), color: Colors.green));
+      final pickup = LatLng(t.pickup.lat, t.pickup.lng);
+      out.add(pinMarker(pickup, color: brandPrimary));
       out.add(pinMarker(LatLng(t.dropoff.lat, t.dropoff.lng), color: Colors.red));
-      final c = t.captain;
-      if (c?.lat != null && c?.lng != null) {
-        out.add(vehicleMarker(LatLng(c!.lat!, c.lng!), t.vehicleType, big: true));
-      }
+      if (t.status == 'requested') out.add(searchingMarker(pickup));
+      final cap = _captainPoint.value;
+      if (cap != null && t.status != 'requested') out.add(animatedVehicleMarker(cap, t.vehicleType));
     } else {
       for (final d in _nearby) {
         out.add(vehicleMarker(LatLng(d.lat, d.lng), d.vehicleType));
       }
-      if (_pickup != null) out.add(pinMarker(LatLng(_pickup!.lat, _pickup!.lng), color: Colors.green));
+      if (_pickup != null) out.add(pinMarker(LatLng(_pickup!.lat, _pickup!.lng), color: brandPrimary));
       if (_dropoff != null) out.add(pinMarker(LatLng(_dropoff!.lat, _dropoff!.lng), color: Colors.red));
     }
     if (_me != null) out.add(meMarker(_me!));
@@ -393,17 +524,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<Polyline> _lines() {
     final t = _trip;
-    final scheme = Theme.of(context).colorScheme;
     if (t != null) {
-      final c = t.captain;
-      final cap = (c?.lat != null && c?.lng != null) ? LatLng(c!.lat!, c.lng!) : null;
+      final cap = _captainPoint.value;
       final pickup = LatLng(t.pickup.lat, t.pickup.lng);
       final dropoff = LatLng(t.dropoff.lat, t.dropoff.lng);
       if (t.status == 'accepted' && cap != null) {
-        return [Polyline(points: [cap, pickup], strokeWidth: 4, color: scheme.primary)];
+        return [Polyline(points: [cap, pickup], strokeWidth: 5, color: brandPrimary)];
       }
       if (t.status == 'in_progress' && cap != null) {
-        return [Polyline(points: [cap, dropoff], strokeWidth: 4, color: scheme.primary)];
+        return [Polyline(points: [cap, dropoff], strokeWidth: 5, color: brandPrimary)];
       }
       if (t.status == 'requested') {
         return [Polyline(points: [pickup, dropoff], strokeWidth: 3, color: Colors.black38)];
@@ -419,7 +548,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final user = widget.session.user!;
     final t = _trip;
     return Scaffold(
       body: Stack(
@@ -436,13 +564,35 @@ class _HomeScreenState extends State<HomeScreen> {
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Align(alignment: Alignment.centerLeft, child: _menu(user)),
-                  if (t == null) ...[const SizedBox(height: 8), _placesCard()],
-                ],
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                transitionBuilder: (child, anim) => FadeTransition(
+                  opacity: anim,
+                  child: SlideTransition(
+                    position: Tween(begin: const Offset(0, -0.4), end: Offset.zero).animate(anim),
+                    child: child,
+                  ),
+                ),
+                child: _banner == null
+                    ? const SizedBox(key: ValueKey('none'), width: double.infinity)
+                    : Material(
+                        key: ValueKey(_banner),
+                        color: brandPrimary,
+                        elevation: 6,
+                        borderRadius: BorderRadius.circular(14),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.notifications_active, color: brandAccent),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(_banner!, style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
               ),
             ),
           ),
@@ -466,7 +616,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                 ),
-                _panel(context),
+                _panel(context, t),
               ],
             ),
           ),
@@ -475,83 +625,21 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _menu(AppUser user) {
-    return Material(
-      color: Colors.white,
-      shape: const CircleBorder(),
-      elevation: 4,
-      child: PopupMenuButton<String>(
-        icon: const Icon(Icons.menu),
-        tooltip: 'Menu',
-        onSelected: (v) {
-          if (v == 'history') {
-            Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => HistoryScreen(api: _api)));
-          } else if (v == 'logout') {
-            widget.session.logout();
-          }
-        },
-        itemBuilder: (_) => [
-          PopupMenuItem(enabled: false, child: Text('${user.name}\n${user.phone}')),
-          const PopupMenuItem(value: 'history', child: Text('Trip history')),
-          const PopupMenuItem(value: 'logout', child: Text('Sign out')),
-        ],
-      ),
-    );
-  }
-
-  Widget _placesCard() {
-    return Card(
-      elevation: 6,
-      margin: EdgeInsets.zero,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ListTile(
-            leading: const Icon(Icons.trip_origin, color: Colors.green),
-            title: Text(
-              _pickup?.text ?? (_locating ? 'Finding your location...' : 'Set your pickup'),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            subtitle: Text(_pickupIsMe && _pickup != null ? 'Your current location' : 'Pickup'),
-            trailing: const Icon(Icons.edit_outlined, size: 20),
-            onTap: () => _choose(forPickup: true),
-          ),
-          const Divider(height: 1, indent: 56),
-          ListTile(
-            leading: const Icon(Icons.stop, color: Colors.red),
-            title: Text(
-              _dropoff?.text ?? 'Where to?',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontWeight: _dropoff == null ? FontWeight.w600 : null, fontSize: 17),
-            ),
-            trailing: _dropoff == null
-                ? const Icon(Icons.search)
-                : IconButton(icon: const Icon(Icons.close), tooltip: 'Clear', onPressed: _clearDestination),
-            onTap: () => _choose(forPickup: false),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _panel(BuildContext context) {
-    final t = _trip;
+  Widget _panel(BuildContext context, Trip? t) {
+    final maxHeight = MediaQuery.of(context).size.height * 0.68;
     return Material(
       elevation: 12,
       color: Theme.of(context).colorScheme.surface,
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      child: SafeArea(
-        top: false,
-        child: Padding(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
-          child: t != null
-              ? _tripPanel(context, t)
-              : _dropoff == null
-                  ? _nearbyPanel(context)
-                  : _optionsPanel(context),
+          child: AnimatedSize(
+            duration: const Duration(milliseconds: 250),
+            alignment: Alignment.topCenter,
+            child: t != null ? _tripPanel(context, t) : _planPanel(context),
+          ),
         ),
       ),
     );
@@ -565,54 +653,120 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// Before a destination is chosen: what is around right now.
-  Widget _nearbyPanel(BuildContext context) {
-    final t = Theme.of(context).textTheme;
+  // ---------- planning: kind, places card, options ----------
+
+  Widget _kindSwitch() {
+    return SegmentedButton<String>(
+      showSelectedIcon: false,
+      segments: const [
+        ButtonSegment(value: 'ride', icon: Icon(Icons.hail), label: Text('Ride')),
+        ButtonSegment(value: 'delivery', icon: Icon(Icons.inventory_2_outlined), label: Text('Delivery')),
+      ],
+      selected: {_kind},
+      onSelectionChanged: (s) => _setKind(s.first),
+    );
+  }
+
+  Widget _planPanel(BuildContext context) {
+    final user = widget.session.user;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text('Rides near you', style: t.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+        if (user != null) StandingBanner(user.standing),
+        _kindSwitch(),
+        const SizedBox(height: 10),
+        _placesCard(),
         if (_locationDenied)
           const Padding(
-            padding: EdgeInsets.only(top: 4),
+            padding: EdgeInsets.only(top: 8),
             child: Text('Location is off. Turn it on, or search for your pickup above.'),
           ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            for (final v in vehicleTypes)
-              Expanded(
-                child: Builder(builder: (_) {
-                  final s = _summary(v.id);
-                  return Column(
-                    children: [
-                      Icon(v.icon, color: v.color, size: 32),
-                      const SizedBox(height: 4),
-                      Text(v.label, style: const TextStyle(fontWeight: FontWeight.w600)),
-                      Text(
-                        s.count == 0 ? 'None nearby' : 'About ${s.etaMin} min',
-                        style: t.bodySmall,
-                      ),
-                    ],
-                  );
-                }),
-              ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        FilledButton.icon(
-          onPressed: () => _choose(forPickup: false),
-          icon: const Icon(Icons.search),
-          label: const Text('Where to?'),
-        ),
-        _errorLine(context),
+        if (_dropoff == null) _errorLine(context) else _optionsSection(context),
       ],
     );
   }
 
-  /// After a destination is chosen: pick a vehicle and request.
-  Widget _optionsPanel(BuildContext context) {
+  Widget _placesCard() {
+    return Card(
+      elevation: 0,
+      margin: EdgeInsets.zero,
+      color: brandSurface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: const BorderSide(color: Colors.black12)),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.trip_origin, color: brandPrimary),
+            title: Text(
+              _pickup?.text ?? (_locating ? 'Finding your location...' : 'Set your pickup'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text(_pickupIsMe && _pickup != null ? 'Your current location' : 'Pickup'),
+            trailing: const Icon(Icons.edit_outlined, size: 20),
+            onTap: () => _choose(forPickup: true),
+          ),
+          const Divider(height: 1, indent: 56),
+          ListTile(
+            leading: const Icon(Icons.location_on, color: Colors.red),
+            title: Text(
+              _dropoff?.text ?? (_kind == 'delivery' ? 'Where to deliver?' : 'Where to?'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontWeight: _dropoff == null ? FontWeight.w700 : null, fontSize: 17),
+            ),
+            trailing: _dropoff == null
+                ? const Icon(Icons.search)
+                : IconButton(icon: const Icon(Icons.close), tooltip: 'Clear', onPressed: _clearDestination),
+            onTap: () => _choose(forPickup: false),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _deliveryForm() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Column(
+        children: [
+          TextField(
+            controller: _item,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(
+              labelText: 'What are you sending?',
+              prefixIcon: Icon(Icons.inventory_2_outlined),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _receiverName,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: const InputDecoration(labelText: 'Receiver name', isDense: true),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  controller: _receiverPhone,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(labelText: 'Receiver phone', isDense: true),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// After a destination is chosen: pick a vehicle, how to pay, and request.
+  Widget _optionsSection(BuildContext context) {
     final t = Theme.of(context).textTheme;
     final est = _estimate;
     if (_estimating || (est == null && _error == null)) {
@@ -625,66 +779,92 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
     if (est == null) {
-      return Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-          const SizedBox(height: 8),
-          OutlinedButton(onPressed: _getEstimate, child: const Text('Try again')),
-        ],
+      return Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+            const SizedBox(height: 8),
+            OutlinedButton(onPressed: _getEstimate, child: const Text('Try again')),
+          ],
+        ),
       );
     }
     final chosen = est.option(_vehicle);
     final chosenType = vehicleById(_vehicle);
+    final walletOk = chosen != null && est.walletAvailable >= chosen.fare;
+    if (_payment == 'wallet' && !walletOk) _payment = 'cash';
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (_kind == 'delivery') _deliveryForm(),
+        const SizedBox(height: 10),
         Text(
           '${est.distanceKm} km · about ${est.durationMin} min${est.isEstimate ? ' · approximate distance' : ''}',
           style: t.bodyMedium,
         ),
+        if (est.nightPercent > 0)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Row(
+              children: [
+                const Icon(Icons.nightlight_round, size: 18, color: brandPrimary),
+                const SizedBox(width: 6),
+                Expanded(child: Text('Night fare: +${est.nightPercent}% from 10 pm to 5 am', style: t.bodySmall)),
+              ],
+            ),
+          ),
         const SizedBox(height: 8),
-        for (final o in est.options)
-          Builder(builder: (_) {
-            final v = vehicleById(o.vehicleType);
-            final selected = o.vehicleType == _vehicle;
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(14),
-                onTap: () => setState(() => _vehicle = o.vehicleType),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: selected ? bodaGreen : Colors.black12, width: selected ? 2.5 : 1),
-                    color: selected ? bodaGreen.withValues(alpha: 0.07) : null,
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(v.icon, size: 34, color: v.color),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(v.label, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                            Text(
-                              o.etaMin == null ? 'None nearby right now' : 'About ${o.etaMin} min away',
-                              style: t.bodySmall,
-                            ),
-                          ],
+        for (var i = 0; i < est.options.length; i++)
+          FadeSlideIn(
+            delay: Duration(milliseconds: 50 * i),
+            child: Builder(builder: (_) {
+              final o = est.options[i];
+              final v = vehicleById(o.vehicleType);
+              final selected = o.vehicleType == _vehicle;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: () => setState(() => _vehicle = o.vehicleType),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: selected ? brandPrimary : Colors.black12, width: selected ? 2.5 : 1),
+                      color: selected ? brandPrimary.withValues(alpha: 0.07) : null,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(v.icon, size: 34, color: v.color),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                v.seats > 1 ? '${v.label} · ${v.seats} seats' : v.label,
+                                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                              ),
+                              Text(
+                                o.etaMin == null ? 'None nearby right now' : 'About ${o.etaMin} min away',
+                                style: t.bodySmall,
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                      Text(ugx(o.fare), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                    ],
+                        Text(ugx(o.fare), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            );
-          }),
+              );
+            }),
+          ),
         if (chosen != null && chosen.nearbyCount == 0)
           Padding(
             padding: const EdgeInsets.only(bottom: 6),
@@ -693,56 +873,92 @@ class _HomeScreenState extends State<HomeScreen> {
               style: t.bodySmall,
             ),
           ),
-        Text('You pay your captain in cash.', style: t.bodySmall),
+        Row(
+          children: [
+            ChoiceChip(
+              avatar: const Icon(Icons.payments_outlined, size: 18),
+              label: const Text('Cash'),
+              selected: _payment == 'cash',
+              onSelected: (_) => setState(() => _payment = 'cash'),
+            ),
+            const SizedBox(width: 8),
+            ChoiceChip(
+              avatar: const Icon(Icons.account_balance_wallet_outlined, size: 18),
+              label: Text('Wallet · ${ugx(est.walletAvailable)}'),
+              selected: _payment == 'wallet',
+              onSelected: walletOk ? (_) => setState(() => _payment = 'wallet') : null,
+            ),
+            if (!walletOk && widget.onOpenWallet != null)
+              TextButton(onPressed: widget.onOpenWallet, child: const Text('Add money')),
+          ],
+        ),
         _errorLine(context),
         const SizedBox(height: 8),
         FilledButton(
           onPressed: _requesting ? null : _request,
           child: _requesting
               ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-              : Text('Request ${chosenType.label}${chosen == null ? '' : ' · ${ugx(chosen.fare)}'}'),
+              : Text(
+                  '${_kind == 'delivery' ? 'Send with' : 'Request'} ${chosenType.label}${chosen == null ? '' : ' · ${ugx(chosen.fare)}'}',
+                ),
         ),
       ],
     );
   }
 
-  String? _etaLine(Trip t) {
-    final c = t.captain;
-    if (c?.lat == null || c?.lng == null) return null;
-    final cap = LatLng(c!.lat!, c.lng!);
-    switch (t.status) {
-      case 'accepted':
-        final m = etaMinutes(kmBetween(cap, LatLng(t.pickup.lat, t.pickup.lng)));
-        return 'Arriving in about $m min';
-      case 'arrived':
-        return 'Your captain is at the pickup';
-      case 'in_progress':
-        final m = etaMinutes(kmBetween(cap, LatLng(t.dropoff.lat, t.dropoff.lng)));
-        return 'About $m min to your destination';
-    }
-    return null;
-  }
+  // ---------- following a trip ----------
 
   Widget _tripPanel(BuildContext context, Trip t) {
     final th = Theme.of(context).textTheme;
     final c = t.captain;
     final v = vehicleById(t.vehicleType);
+    final leg = _legKm;
     final title = switch (t.status) {
       'requested' => 'Finding your ${v.label.toLowerCase()}...',
       'accepted' => 'Your captain is on the way',
       'arrived' => 'Your captain has arrived',
-      'in_progress' => 'On your trip',
+      'in_progress' => t.isDelivery ? 'Your delivery is on its way' : 'On your trip',
       'no_captain' => 'No captain found',
       'cancelled' => 'Trip cancelled',
       _ => statusLabel(t.status),
     };
-    final eta = _etaLine(t);
+    final user = widget.session.user;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(title, style: th.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
-        if (eta != null) Text(eta, style: th.titleSmall?.copyWith(color: bodaGreen)),
+        if (user != null) StandingBanner(user.standing),
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 250),
+          child: Text(title, key: ValueKey(title), style: th.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+        ),
+        if (leg != null && t.status == 'accepted') ...[
+          const SizedBox(height: 10),
+          ArrivalBar(
+            startKm: _legStartKm,
+            nowKm: leg,
+            title: '${distanceText(leg)} away · about ${etaMinutes(leg)} min',
+          ),
+        ],
+        if (leg != null && t.status == 'in_progress') ...[
+          const SizedBox(height: 10),
+          ArrivalBar(
+            startKm: _legStartKm,
+            nowKm: leg,
+            color: Colors.green,
+            title: '${distanceText(leg)} to go · about ${etaMinutes(leg)} min',
+          ),
+        ],
+        if (t.status == 'arrived') ...[
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              const Pulse(size: 44, color: Colors.green, child: Icon(Icons.place, color: Colors.green)),
+              const SizedBox(width: 8),
+              Expanded(child: Text(t.isDelivery ? 'Hand over your item to the captain.' : 'Please head to your captain now.')),
+            ],
+          ),
+        ],
         if (t.status == 'requested') ...[
           const SizedBox(height: 10),
           const LinearProgressIndicator(),
@@ -753,6 +969,23 @@ class _HomeScreenState extends State<HomeScreen> {
           const Padding(
             padding: EdgeInsets.only(top: 6),
             child: Text('Nobody nearby could take it. Please try again, or try another type of ride.'),
+          ),
+        if (t.isDelivery)
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(color: brandSurface, borderRadius: BorderRadius.circular(12)),
+              child: Row(
+                children: [
+                  const Icon(Icons.inventory_2_outlined, color: brandPrimary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text('${t.deliveryItem ?? 'Item'}  →  ${t.receiverName ?? ''}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                  ),
+                ],
+              ),
+            ),
           ),
         if (c != null) ...[
           const SizedBox(height: 12),
@@ -766,7 +999,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
                   CircleAvatar(
                     radius: 24,
-                    backgroundColor: bodaGreen,
+                    backgroundColor: brandPrimary,
                     child: Text(
                       c.name.isEmpty ? '?' : c.name.trim()[0].toUpperCase(),
                       style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
@@ -779,7 +1012,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Text(c.name, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
                         Row(children: [
-                          const Icon(Icons.star, size: 16, color: bodaAmber),
+                          const Icon(Icons.star, size: 16, color: brandAccent),
                           const SizedBox(width: 2),
                           Text(c.rating == null ? 'New' : c.rating!.toStringAsFixed(1)),
                           Text('  ·  ${v.label}'),
@@ -790,7 +1023,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
-                      color: bodaAmber,
+                      color: brandAccent,
                       borderRadius: BorderRadius.circular(6),
                       border: Border.all(color: Colors.black87),
                     ),
@@ -827,7 +1060,11 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
         const SizedBox(height: 10),
-        Text('${ugx(t.fare)} cash · ${t.distanceKm} km', style: th.bodyMedium),
+        Text(
+          '${ugx(t.fare)} · ${t.paymentMethod == 'wallet' ? 'wallet' : 'cash'} · ${t.distanceKm} km'
+          '${t.nightPercent > 0 ? ' · night fare +${t.nightPercent}%' : ''}',
+          style: th.bodyMedium,
+        ),
         _errorLine(context),
         const SizedBox(height: 8),
         if (t.status == 'no_captain' || t.status == 'cancelled')
@@ -881,10 +1118,15 @@ class _RatingSheetState extends State<_RatingSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('You have arrived', textAlign: TextAlign.center, style: Theme.of(context).textTheme.headlineSmall),
+          Text(widget.trip.isDelivery ? 'Delivery done' : 'You have arrived',
+              textAlign: TextAlign.center, style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 6),
-          Text('Please pay ${ugx(widget.trip.fare)} in cash.',
-              textAlign: TextAlign.center, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+          Text(
+              widget.trip.paymentMethod == 'wallet'
+                  ? '${ugx(widget.trip.fare)} was paid from your wallet.'
+                  : 'Please pay ${ugx(widget.trip.fare)} in cash.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
           const SizedBox(height: 14),
           Text(name == null ? 'How was your ride?' : 'How was your ride with $name?', textAlign: TextAlign.center),
           const SizedBox(height: 8),
@@ -895,7 +1137,7 @@ class _RatingSheetState extends State<_RatingSheet> {
                 IconButton(
                   iconSize: 40,
                   onPressed: () => setState(() => _stars = i),
-                  icon: Icon(i <= _stars ? Icons.star : Icons.star_border, color: bodaAmber),
+                  icon: Icon(i <= _stars ? Icons.star : Icons.star_border, color: brandAccent),
                 ),
             ],
           ),

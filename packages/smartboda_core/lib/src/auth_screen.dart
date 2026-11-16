@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 import 'api.dart';
+import 'forgot_password_screen.dart';
 import 'session.dart';
 import 'theme.dart';
 import 'vehicle.dart';
@@ -79,7 +80,6 @@ class _AuthScreenState extends State<AuthScreen> {
 
   String? _googleClientId;
   String? _googleIdToken;
-  String _googleName = '';
 
   bool get _isCaptain => widget.session.role == 'captain';
   bool get _googleAvailable => !_isCaptain && _googleClientId != null;
@@ -143,10 +143,7 @@ class _AuthScreenState extends State<AuthScreen> {
       ];
     }
     if (_method == _Method.google) {
-      return [
-        if (_googleName.trim().length < 2) _nameQ(),
-        _phoneQ('phone', hint: 'Captains use it to reach you about your ride.'),
-      ];
+      return [_nameQ()];
     }
     final phoneQ = _phoneQ('phone',
         hint: _isCaptain
@@ -156,7 +153,8 @@ class _AuthScreenState extends State<AuthScreen> {
       if (_method == _Method.email) ...[
         _emailQ('email', title: 'What is your email address?'),
         _nameQ(),
-        phoneQ,
+        // Passengers need only an email and a password. Captains also need a phone number.
+        if (_isCaptain) phoneQ,
       ] else ...[
         _phoneQ('phone', title: 'What is your phone number?', hint: 'We will use it to sign you in.'),
         _nameQ(),
@@ -279,12 +277,11 @@ class _AuthScreenState extends State<AuthScreen> {
       if (_mode == _Mode.signIn) {
         await widget.session.login(_answer('identifier'), _controller('password').text);
       } else if (_method == _Method.google) {
-        final name = _googleName.trim().length >= 2 ? _googleName.trim() : _answer('name');
-        await widget.session.googleSignIn(_googleIdToken!, phone: _answer('phone'), name: name);
+        await widget.session.googleSignIn(_googleIdToken!, name: _answer('name'));
       } else {
         await widget.session.register({
           'name': _answer('name'),
-          'phone': _answer('phone'),
+          if (_answer('phone').isNotEmpty) 'phone': _answer('phone'),
           'password': _controller('password').text,
           if (_method == _Method.email) 'email': _answer('email'),
           if (_isCaptain) ...{
@@ -302,6 +299,13 @@ class _AuthScreenState extends State<AuthScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  void _forgot() {
+    final typed = _answer('identifier');
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => ForgotPasswordScreen(session: widget.session, email: typed.contains('@') ? typed : ''),
+    ));
   }
 
   Future<void> _google() async {
@@ -322,8 +326,8 @@ class _AuthScreenState extends State<AuthScreen> {
       }
       final more = await widget.session.googleSignIn(token);
       if (more != null && mounted) {
+        // Google gave no name, so ask for one.
         _googleIdToken = token;
-        _googleName = (more['name'] as String?) ?? '';
         _mode = _Mode.signUp;
         _chooseMethod(_Method.google);
       }
@@ -407,11 +411,26 @@ class _AuthScreenState extends State<AuthScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const Spacer(),
-          const Icon(Icons.two_wheeler, size: 88, color: bodaGreen),
+          TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0.4, end: 1),
+            duration: const Duration(milliseconds: 700),
+            curve: Curves.elasticOut,
+            builder: (context, v, child) => Transform.scale(scale: v, child: child),
+            child: Container(
+              height: 112,
+              width: 112,
+              alignment: Alignment.center,
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(colors: [brandPrimary, brandDark], begin: Alignment.topLeft, end: Alignment.bottomRight),
+              ),
+              child: const Icon(Icons.two_wheeler, size: 64, color: Colors.white),
+            ),
+          ),
           const SizedBox(height: 16),
           Text('Welcome to\n${widget.appTitle}',
               textAlign: TextAlign.center,
-              style: t.headlineLarge?.copyWith(fontWeight: FontWeight.bold, color: bodaGreen)),
+              style: t.headlineLarge?.copyWith(fontWeight: FontWeight.bold, color: brandPrimary)),
           const SizedBox(height: 12),
           Text(
             _isCaptain ? 'Get trip requests and keep your earnings.' : 'Safe, fair boda rides at the tap of a button.',
@@ -506,10 +525,10 @@ class _AuthScreenState extends State<AuthScreen> {
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(
-                              color: c.text == v.id ? bodaGreen : Colors.black26,
+                              color: c.text == v.id ? brandPrimary : Colors.black26,
                               width: c.text == v.id ? 2.5 : 1,
                             ),
-                            color: c.text == v.id ? bodaGreen.withValues(alpha: 0.08) : null,
+                            color: c.text == v.id ? brandPrimary.withValues(alpha: 0.08) : null,
                           ),
                           child: Row(
                             children: [
@@ -524,7 +543,7 @@ class _AuthScreenState extends State<AuthScreen> {
                                   ],
                                 ),
                               ),
-                              if (c.text == v.id) const Icon(Icons.check_circle, color: bodaGreen),
+                              if (c.text == v.id) const Icon(Icons.check_circle, color: brandPrimary),
                             ],
                           ),
                         ),
@@ -557,6 +576,11 @@ class _AuthScreenState extends State<AuthScreen> {
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
                     child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  ),
+                if (_mode == _Mode.signIn && q.id == 'password')
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(onPressed: _busy ? null : _forgot, child: const Text('Forgot password?')),
                   ),
               ],
             ),

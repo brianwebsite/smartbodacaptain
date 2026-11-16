@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import 'theme.dart';
 import 'vehicle.dart';
+import 'widgets.dart';
 
 /// Centre of Kampala. Only used to point the map camera before the phone
 /// has found its own location; it is never sent to the server as data.
@@ -52,6 +54,44 @@ Marker vehicleMarker(LatLng point, String vehicleType, {bool big = false}) {
         boxShadow: const [BoxShadow(blurRadius: 4, color: Colors.black26)],
       ),
       child: Icon(v.icon, color: v.color, size: big ? 28 : 22),
+    ),
+  );
+}
+
+/// A vehicle with a soft ring pulsing around it, for the captain coming to you.
+Marker animatedVehicleMarker(LatLng point, String vehicleType) {
+  final v = vehicleById(vehicleType);
+  return Marker(
+    point: point,
+    width: 84,
+    height: 84,
+    child: Pulse(
+      size: 84,
+      color: v.color,
+      child: Container(
+        width: 46,
+        height: 46,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          shape: BoxShape.circle,
+          border: Border.all(color: v.color, width: 3),
+          boxShadow: const [BoxShadow(blurRadius: 6, color: Colors.black38)],
+        ),
+        child: Icon(v.icon, color: v.color, size: 26),
+      ),
+    ),
+  );
+}
+
+/// A ring that pulses at a point, used while we search for a captain.
+Marker searchingMarker(LatLng point) {
+  return Marker(
+    point: point,
+    width: 120,
+    height: 120,
+    child: const Pulse(
+      size: 120,
+      child: Icon(Icons.circle, color: brandPrimary, size: 18),
     ),
   );
 }

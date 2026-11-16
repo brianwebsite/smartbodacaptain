@@ -83,6 +83,32 @@ class Session extends ChangeNotifier {
     return null;
   }
 
+  /// True when the server can email password-reset codes.
+  Future<bool> passwordResetAvailable() async {
+    try {
+      final r = await api.get('/api/auth/options');
+      return r['passwordReset'] == true;
+    } on ApiException {
+      return false;
+    }
+  }
+
+  Future<void> sendResetCode(String email) async {
+    await api.post('/api/auth/forgot', {'email': email});
+  }
+
+  Future<void> resetPassword({required String email, required String code, required String password}) async {
+    await api.post('/api/auth/reset', {'email': email, 'code': code, 'password': password});
+  }
+
+  /// Takes the fresh account details the server sometimes sends back with an answer.
+  void applyUserJson(Object? json) {
+    if (json is Map<String, dynamic>) {
+      user = AppUser.fromJson(json);
+      notifyListeners();
+    }
+  }
+
   Future<void> register(Map<String, dynamic> fields) async {
     final r = await api.post('/api/auth/register', {...fields, 'role': role});
     await _accept(r);
