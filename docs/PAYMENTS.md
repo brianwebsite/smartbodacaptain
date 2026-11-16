@@ -31,3 +31,31 @@ From the README of github.com/codrone/livepay:
 - **Idempotency.** Every payment request carries a unique key so a retry can never charge twice.
 - **Confirmation.** A payment counts only when the signed webhook arrives or the status check says success, never on the app's word.
 - All amounts are whole UGX integers.
+
+## How Smart Boda gets paid (built and running now)
+
+Captains own their vehicles and pay their own costs. Smart Boda takes a commission (default 15%, set in the admin Settings).
+
+**Wallet trips (passenger pays from the Smart Boda wallet).** The fare is set aside when the ride is requested and moved when the trip ends. The captain's share goes to their wallet and Smart Boda's share stays with Smart Boda. If the captain owes commission from earlier cash trips, it is taken from this share first. Nothing can be skipped: the money moves only when the trip completes.
+
+**Cash trips (passenger pays the captain).** Smart Boda never touches the cash, so the commission is recorded as a debt the captain owes (admin: Captains, "Owes"). Three protections stop a captain simply never paying or never completing:
+
+1. **Debt limit.** Admin Settings, "Captain debt limit" (default UGX 50,000). A captain who owes more than that cannot go online or accept trips until the admin records a payment. This is the real protection: a captain who never pays stops earning, so the most Smart Boda can lose per captain is the limit.
+2. **The phone completes the trip, not only the captain.** The captain app sends its location every 4 seconds during a trip. The server marks the trip "arrived" near the pickup, "started" after the captain drives away from the pickup, and "completed" once they sit at the drop-off after a real ride (at least 2 minutes). So a captain who forgets (or chooses not to) tap start or complete still creates the debt. Trips started this way are flagged "auto-started" in the admin Trips list.
+3. **The passenger can see everything.** Every trip records who, where, when, the fare and the payment method. Passengers rate every trip, and captains rate passengers. The admin sees every cash trip and every commission owed.
+
+**What can still go wrong with cash.** A captain who switches the app off during a trip, or a passenger and captain who agree to cheat together, will not be caught by software. Handle that with the debt limit, the ratings, and by suspending repeat offenders. Encourage wallet payments: they cannot be skipped.
+
+**Best next step for collecting commission from cash trips.** Once LivePay collection works, let captains top up a "commission credit" (prepaid) instead of owing afterwards. This is how most boda apps avoid chasing debts.
+
+## Penalties for cancelling (built and running now)
+Only cancels after a captain accepted count. Cancelling while "finding a captain" is free.
+- **Captains**: 2 cancels in 24 hours is a warning. 3 means they are treated as twice as far from every pickup, so they get fewer offers. 5 means no offers for 60 minutes.
+- **Passengers**: 2 cancels in 24 hours is a warning. 4 means no new requests for 60 minutes.
+The numbers are in `backend/src/behavior.js` and should be tuned after watching real use.
+
+## Night fares
+Fares rise by the percentage in admin Settings (default 5%) from 10 pm to 5 am Uganda time. The passenger sees "Night fare +5%" before requesting, and the trip records the percentage.
+
+## Customer wallet top-up
+Wallets work today. The admin can add money to a passenger's wallet (Users & wallets tab) after the passenger pays by MoMo to you. The in-app "Add money" button says "coming soon" until LivePay is connected; see the sections above for what is needed.

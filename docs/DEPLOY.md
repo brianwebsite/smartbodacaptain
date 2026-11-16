@@ -59,3 +59,19 @@ Render's free plan has no permanent disk: data is wiped when the service restart
 
 ## If the admin cannot sign in
 Open the server's log (on Render: your service > Logs) and find the lines starting with `Admin:`. They say exactly what the server saw, for example "ADMIN_PASSWORD must be at least 10 characters" or "the phone ... already belongs to a passenger account". Fix the setting and redeploy. The server repairs the admin account from `ADMIN_PHONE` and `ADMIN_PASSWORD` on every start, so changing the password there is how you reset it. Sign in on `/admin` with the same phone number and password, typed exactly as in the settings (no quote marks).
+
+## Forgot-password emails (optional)
+Passengers who signed up with an email can reset their password with a 6-digit code sent to that email. This needs an email sender. The free plan of Brevo (brevo.com) is enough for a pilot:
+1. Create a Brevo account and verify one sender address (an address you can receive mail at).
+2. In Brevo, make an API key (SMTP & API, API keys).
+3. Set two environment variables on the server: `BREVO_API_KEY` (the key) and `MAIL_FROM` (the verified sender address). Restart.
+The log line `Password reset email: on` confirms it. Without these, the app tells people to contact support, and you can reset any password yourself in the admin dashboard (Users & wallets, Reset password).
+
+## Server settings summary
+| Variable | What it does |
+|---|---|
+| `ADMIN_PHONE`, `ADMIN_PASSWORD` | The admin login (password at least 10 characters) |
+| `GOOGLE_CLIENT_ID` | Turns on "Continue with Google" |
+| `BREVO_API_KEY`, `MAIL_FROM` | Turns on forgot-password emails |
+| `DB_PATH` | Where the database file lives |
+| `TRUST_PROXY=1` | Behind Render or another proxy, so rate limits see the real visitor |
