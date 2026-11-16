@@ -53,6 +53,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   bool _requesting = false;
   String? _error;
 
+  // searching: up to three rounds of 50 seconds before we say nobody was found
+  static const _maxRounds = 3;
+  int _round = 1;
+  Map<String, dynamic>? _lastBody;
+  bool _reSearching = false;
+
   List<NearbyDriver> _nearby = [];
 
   // the trip in progress
@@ -245,7 +251,22 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         'dropoff': {'lat': dr.lat, 'lng': dr.lng},
         'kind': _kind,
       });
-      if (mounted) setState(() => _estimate = FareEstimate.fromJson(r));
+      if (mounted) {
+        final est = FareEstimate.fromJson(r);
+        setState(() {
+          _estimate = est;
+          // Never leave a vehicle selected that nobody is near.
+          final current = est.option(_vehicle);
+          if (current == null || current.nearbyCount == 0) {
+            for (final o in est.options) {
+              if (o.nearbyCount > 0) {
+                _vehicle = o.vehicleType;
+                break;
+              }
+            }
+          }
+        });
+      }
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } finally {
@@ -288,7 +309,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       _error = null;
     });
     try {
-      final r = await _api.post('/api/trips', {
+      final body = <String, dynamic>{
         'pickup': {'lat': pu.lat, 'lng': pu.lng},
         'dropoff': {'lat': dr.lat, 'lng': dr.lng},
         'pickupLabel': pu.label,
@@ -301,10 +322,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           'receiverName': _receiverName.text.trim(),
           'receiverPhone': _receiverPhone.text.trim(),
         },
-      });
+      };
+      final r = await _api.post('/api/trips', body);
       if (mounted) {
         HapticFeedback.mediumImpact();
         setState(() {
+          _lastBody = body;
+          _round = 1;
           _trip = Trip.fromJson(r['trip'] as Map<String, dynamic>);
           _estimate = null;
           _nearby = [];
@@ -336,6 +360,25 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         }
       } else if (t == null && before != null && before.isFinal && before.status != 'completed') {
         shown = before; // keep the ending visible until the passenger taps OK
+      }
+      if (!mounted) return;
+      if (shown != null && shown.status == 'no_captain' && _round < _maxRounds && _lastBody != null && !_reSearching) {
+        // Nobody took it in 50 seconds: search again by itself.
+        _reSearching = true;
+        try {
+          final r = await _api.post('/api/trips', _lastBody);
+          if (mounted) {
+            setState(() {
+              _round++;
+              _trip = Trip.fromJson(r['trip'] as Map<String, dynamic>);
+            });
+            return;
+          }
+        } on ApiException {
+          // Could not start another round: show the ending below.
+        } finally {
+          _reSearching = false;
+        }
       }
       if (!mounted) return;
       setState(() => _trip = shown);
@@ -489,6 +532,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   void _finishedOk() {
     setState(() {
+      _round = 1;
+      _lastBody = null;
       _trip = null;
       _dropoff = null;
       _estimate = null;
@@ -792,6 +837,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         ),
       );
     }
+    final anyAvailable = est.options.any((o) => o.nearbyCount > 0);
     final chosen = est.option(_vehicle);
     final chosenType = vehicleById(_vehicle);
     final walletOk = chosen != null && est.walletAvailable >= chosen.fare;
@@ -824,12 +870,15 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             child: Builder(builder: (_) {
               final o = est.options[i];
               final v = vehicleById(o.vehicleType);
-              final selected = o.vehicleType == _vehicle;
+              final available = o.nearbyCount > 0;
+              final selected = available && o.vehicleType == _vehicle;
               return Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: InkWell(
+                child: Opacity(
+                  opacity: available ? 1 : 0.45,
+                  child: InkWell(
                   borderRadius: BorderRadius.circular(14),
-                  onTap: () => setState(() => _vehicle = o.vehicleType),
+                  onTap: available ? () => setState(() => _vehicle = o.vehicleType) : null,
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 200),
                     padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -857,20 +906,21 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                             ],
                           ),
                         ),
-                        Text(ugx(o.fare), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        Text(available ? ugx(o.fare) : '', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                       ],
                     ),
                   ),
                 ),
+                ),
               );
             }),
           ),
-        if (chosen != null && chosen.nearbyCount == 0)
+        if (!anyAvailable)
           Padding(
             padding: const EdgeInsets.only(bottom: 6),
             child: Text(
-              'No ${chosenType.label.toLowerCase()} is near you right now. You can still request, and we will keep looking.',
-              style: t.bodySmall,
+              'No rides are near you right now. Please try again in a few minutes.',
+              style: t.bodyMedium,
             ),
           ),
         Row(
@@ -895,7 +945,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         _errorLine(context),
         const SizedBox(height: 8),
         FilledButton(
-          onPressed: _requesting ? null : _request,
+          onPressed: _requesting || !anyAvailable ? null : _request,
           child: _requesting
               ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
               : Text(
@@ -980,9 +1030,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         ],
         if (t.status == 'requested') ...[
           const SizedBox(height: 10),
-          const LinearProgressIndicator(),
-          const SizedBox(height: 6),
-          const Text('We are asking captains near you. This usually takes a minute.'),
+          _SearchingCard(key: ValueKey(t.id), trip: t, round: _round, rounds: _maxRounds),
         ],
         if (t.status == 'no_captain')
           const Padding(
@@ -1093,6 +1141,102 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             onPressed: () => _cancel(t),
             child: Text('Cancel trip', style: TextStyle(color: Theme.of(context).colorScheme.error)),
           ),
+      ],
+    );
+  }
+}
+
+/// "Locating nearby captains": the message changes while a 50-second ring counts down
+/// and changes colour. If nobody takes the trip, the app searches again by itself.
+class _SearchingCard extends StatefulWidget {
+  const _SearchingCard({super.key, required this.trip, required this.round, required this.rounds});
+
+  final Trip trip;
+  final int round;
+  final int rounds;
+
+  @override
+  State<_SearchingCard> createState() => _SearchingCardState();
+}
+
+class _SearchingCardState extends State<_SearchingCard> {
+  static const _total = 50;
+  static const _messages = [
+    'Locating nearby captains...',
+    'Hold on...',
+    'Asking captains near you...',
+    'Hold on, still looking...',
+    'Almost there...',
+  ];
+  Timer? _timer;
+  late DateTime _start;
+
+  @override
+  void initState() {
+    super.initState();
+    // Use the trip's own start when the clocks agree, otherwise start counting now.
+    final age = DateTime.now().difference(widget.trip.createdAt).inSeconds;
+    _start = DateTime.now().subtract(Duration(seconds: age >= 0 && age < _total ? age : 0));
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final elapsed = DateTime.now().difference(_start).inSeconds.clamp(0, _total);
+    final left = _total - elapsed;
+    final color = left > 30 ? Colors.green : (left > 15 ? Colors.orange : Colors.red);
+    final message = widget.round > 1 && elapsed < 6
+        ? 'Searching again...'
+        : _messages[(elapsed ~/ 6) % _messages.length];
+    return Row(
+      children: [
+        SizedBox(
+          width: 64,
+          height: 64,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              SizedBox(
+                width: 64,
+                height: 64,
+                child: TweenAnimationBuilder<Color?>(
+                  tween: ColorTween(begin: color, end: color),
+                  duration: const Duration(milliseconds: 400),
+                  builder: (_, c, __) => CircularProgressIndicator(
+                    value: left / _total,
+                    strokeWidth: 6,
+                    color: c,
+                    backgroundColor: Colors.black12,
+                  ),
+                ),
+              ),
+              Text('$left', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: color)),
+            ],
+          ),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                child: Text(message,
+                    key: ValueKey(message), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              ),
+              if (widget.round > 1)
+                Text('Search ${widget.round} of ${widget.rounds}', style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ),
+        ),
       ],
     );
   }
