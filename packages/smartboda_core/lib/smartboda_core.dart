@@ -19,6 +19,7 @@ export 'src/location.dart';
 export 'src/map_view.dart';
 export 'src/models.dart';
 export 'src/session.dart';
+export 'src/slide_confirm.dart';
 export 'src/theme.dart';
 export 'src/wallet_screen.dart';
 export 'src/widgets.dart';

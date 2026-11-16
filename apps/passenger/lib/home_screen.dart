@@ -335,10 +335,59 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         });
       }
     } on ApiException catch (e) {
-      if (mounted) setState(() => _error = e.message);
+      if (e.code == 'phone_needed' && mounted) {
+        // Riders need a number to call. Ask for it once, then send the request again.
+        if (await _askPhone()) {
+          if (mounted) setState(() => _requesting = false);
+          return _request();
+        }
+      } else if (mounted) {
+        setState(() => _error = e.message);
+      }
     } finally {
       if (mounted) setState(() => _requesting = false);
     }
+  }
+
+  Future<bool> _askPhone() async {
+    final ctrl = TextEditingController();
+    String? error;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('Your phone number'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Your captain needs a number to call you when they arrive.'),
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                keyboardType: TextInputType.phone,
+                decoration: InputDecoration(labelText: 'Phone number', hintText: '0772 123456', errorText: error),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                try {
+                  await _api.put('/api/me/phone', {'phone': ctrl.text.trim()});
+                  if (ctx.mounted) Navigator.pop(ctx, true);
+                } on ApiException catch (e) {
+                  setLocal(() => error = e.message);
+                }
+              },
+              child: const Text('Save and continue'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == true) await widget.session.refreshUser().catchError((_) {});
+    return saved == true;
   }
 
   Future<void> _refreshTrip() async {
@@ -831,6 +880,53 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     );
   }
 
+  /// One ride type as a compact square tile. Two sit side by side.
+  Widget _optionTile(FareOption o, TextTheme t) {
+    final v = vehicleById(o.vehicleType);
+    final available = o.nearbyCount > 0;
+    final selected = available && o.vehicleType == _vehicle;
+    return Opacity(
+      opacity: available ? 1 : 0.45,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: available ? () => setState(() => _vehicle = o.vehicleType) : null,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: selected ? brandPrimary : Colors.black12, width: selected ? 2.5 : 1),
+            color: selected ? brandPrimary.withValues(alpha: 0.08) : Colors.white,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Icon(v.icon, size: 26, color: v.color),
+                  const Spacer(),
+                  Text(available ? ugx(o.fare) : '', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Text(
+                v.seats > 1 ? '${v.label} · ${v.seats}' : v.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+              Text(
+                o.etaMin == null ? 'None nearby' : '${o.etaMin} min away',
+                style: t.bodySmall?.copyWith(fontSize: 11),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   /// After a destination is chosen: pick a vehicle, how to pay, and request.
   Widget _optionsSection(BuildContext context) {
     final t = Theme.of(context).textTheme;
@@ -868,7 +964,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (_kind == 'delivery') _deliveryForm(),
-        const SizedBox(height: 10),
+        const SizedBox(height: 4),
         Text(
           '${est.distanceKm} km · about ${est.durationMin} min${est.isEstimate ? ' · approximate distance' : ''}',
           style: t.bodyMedium,
@@ -885,56 +981,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             ),
           ),
         const SizedBox(height: 8),
-        for (var i = 0; i < est.options.length; i++)
-          FadeSlideIn(
-            delay: Duration(milliseconds: 50 * i),
-            child: Builder(builder: (_) {
-              final o = est.options[i];
-              final v = vehicleById(o.vehicleType);
-              final available = o.nearbyCount > 0;
-              final selected = available && o.vehicleType == _vehicle;
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Opacity(
-                  opacity: available ? 1 : 0.45,
-                  child: InkWell(
-                  borderRadius: BorderRadius.circular(14),
-                  onTap: available ? () => setState(() => _vehicle = o.vehicleType) : null,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: selected ? brandPrimary : Colors.black12, width: selected ? 2.5 : 1),
-                      color: selected ? brandPrimary.withValues(alpha: 0.07) : null,
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(v.icon, size: 34, color: v.color),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                v.seats > 1 ? '${v.label} · ${v.seats} seats' : v.label,
-                                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                              ),
-                              Text(
-                                o.etaMin == null ? 'None nearby right now' : 'About ${o.etaMin} min away',
-                                style: t.bodySmall,
-                              ),
-                            ],
-                          ),
-                        ),
-                        Text(available ? ugx(o.fare) : '', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                      ],
-                    ),
-                  ),
-                ),
-                ),
-              );
-            }),
+        for (var i = 0; i < est.options.length; i += 2)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(child: _optionTile(est.options[i], t)),
+                const SizedBox(width: 8),
+                Expanded(child: i + 1 < est.options.length ? _optionTile(est.options[i + 1], t) : const SizedBox.shrink()),
+              ],
+            ),
           ),
         if (!anyAvailable)
           Padding(

@@ -446,3 +446,34 @@ test('webhook: only a correctly signed call is accepted', async () => {
   assert.equal((await h.call('GET', '/api/wallet', undefined, h.token)).body.balance, 5000);
   await h.close();
 });
+
+test('receipt emails go to passenger and rider once; a phone is needed to request a ride', async () => {
+  const sent = [];
+  const h = await harness({ mailer: { send: async (m) => sent.push(m) } });
+  const pax = await h.passenger({ phone: undefined, email: 'amina@example.com' });
+  const cap = await h.captain();
+  // An email-only passenger must add a phone first, so the rider can call.
+  const noPhone = await h.request(pax);
+  assert.equal(noPhone.status, 409);
+  assert.equal(noPhone.body.code, 'phone_needed');
+  assert.equal((await h.call('PUT', '/api/me/phone', { phone: 'abc' }, pax.token)).status, 400);
+  const ok = await h.call('PUT', '/api/me/phone', { phone: '0772555111' }, pax.token);
+  assert.equal(ok.body.user.phone, '+256772555111');
+
+  const t = await h.request(pax);
+  assert.equal(t.status, 201, JSON.stringify(t.body));
+  await h.accept(cap, t.body.trip.id);
+  const view = (await h.call('GET', `/api/trips/${t.body.trip.id}`, undefined, cap.token)).body.trip;
+  assert.equal(view.passenger.phone, '+256772555111'); // the captain can now call
+  await h.finish(cap, t.body.trip.id);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(sent.length, 1); // only the passenger has an email
+  assert.equal(sent[0].to, 'amina@example.com');
+  assert.match(sent[0].subject, /^Your Smart Boda receipt SB-/);
+  assert.match(sent[0].text, /Fare: UGX/);
+  assert.ok(!/commission/i.test(sent[0].text)); // the passenger never sees the rider's side
+  await h.step(cap, t.body.trip.id, 'complete'); // a repeat does not send again
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(sent.length, 1);
+  await h.close();
+});

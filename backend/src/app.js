@@ -619,6 +619,21 @@ export function createApp({
 
   router.add('GET', '/api/me', ({ user }) => ({ user: meView(user) }), { roles: ['passenger', 'captain', 'admin'] });
 
+  // The main phone number, for people who signed up with an email only. Riders call it.
+  router.add(
+    'PUT',
+    '/api/me/phone',
+    ({ user, body }) => {
+      obj(body);
+      const phone = parsePhone(body.phone);
+      const taken = db.prepare('SELECT id FROM users WHERE phone = ? AND id <> ?').get(phone, user.id);
+      if (taken) throw new HttpError(409, 'That number is already used by another account', 'phone_taken');
+      db.prepare('UPDATE users SET phone = ? WHERE id = ?').run(phone, user.id);
+      return { user: meView(getUser(user.id)) };
+    },
+    { roles: ['passenger'] },
+  );
+
   // A second number Smart Boda can reach the person on, for example a relative.
   router.add(
     'PUT',
@@ -916,6 +931,9 @@ export function createApp({
       if (!['cash', 'wallet'].includes(pm)) {
         throw new HttpError(400, 'Choose cash or your Smart Boda wallet', 'payment_unavailable');
       }
+      if (!user.phone) {
+        throw new HttpError(409, 'Add your phone number so your captain can call you.', 'phone_needed');
+      }
       const standing = passengerStanding(passengerCancelCount(db, user.id, now()), now());
       if (standing.level === 'blocked') throw new HttpError(403, standing.message, 'blocked');
       const kind = body.kind === undefined ? 'ride' : oneOf(body.kind, 'kind', ['ride', 'delivery']);
@@ -1202,6 +1220,82 @@ export function createApp({
   }
 
   /** Finishes a trip and moves the money. Call inside a transaction. Safe to call twice: each journal posts once. */
+  /** What a receipt shows. The passenger sees the fare; the rider also sees commission and earnings. */
+  function buildReceipt(row, forRole) {
+    const cap = row.captain_id ? getUser(row.captain_id) : null;
+    const prof = row.captain_id ? getProfile(row.captain_id) : null;
+    const digital = row.payment_method === 'wallet';
+    const receipt = {
+      number: `SB-${row.id.slice(0, 8).toUpperCase()}`,
+      tripId: row.id,
+      date: row.completed_at,
+      kind: row.kind,
+      pickup: row.pickup_label,
+      dropoff: row.dropoff_label,
+      distanceKm: round1(row.distance_km),
+      vehicleType: row.vehicle_type,
+      rider: cap ? { name: cap.name, plate: prof?.bike_plate ?? null } : null,
+      fare: row.fare,
+      nightPercent: row.night_percent,
+      paymentMethod: row.payment_method,
+      paymentStatus: digital ? 'Paid from Smart Boda wallet' : 'Cash paid to the rider',
+      pinVerified: Boolean(row.pin_verified),
+    };
+    if (forRole !== 'passenger') {
+      receipt.commission = row.commission;
+      receipt.commissionRate = row.commission_rate;
+      receipt.riderEarnings = row.captain_earnings;
+      receipt.earningsNote = digital
+        ? 'Paid through the app: this amount is payable to the rider.'
+        : 'Collected in cash by the rider. It does not pass through Smart Boda.';
+    }
+    return receipt;
+  }
+
+  function receiptText(r, forRole, name) {
+    const when = new Date(Date.parse(r.date) + 3 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 16);
+    const lines = [
+      `Hello ${name},`,
+      '',
+      forRole === 'passenger' ? 'Thank you for riding with Smart Boda. Here is your receipt.' : 'Here is the receipt for the trip you completed.',
+      '',
+      `Receipt: ${r.number}`,
+      `Date: ${when} (Uganda time)`,
+      `From: ${r.pickup ?? 'Pickup point'}`,
+      `To: ${r.dropoff ?? 'Drop-off point'}`,
+      `Distance: ${r.distanceKm} km`,
+      r.rider ? `${forRole === 'passenger' ? 'Rider' : 'Rider (you)'}: ${r.rider.name}${r.rider.plate ? ' · ' + r.rider.plate : ''}` : null,
+      r.nightPercent > 0 ? `Night fare: +${r.nightPercent}% included` : null,
+      `Fare: ${fmtUgx(r.fare)}`,
+      `Payment: ${r.paymentStatus}`,
+    ];
+    if (r.commission !== undefined) {
+      lines.push(`Smart Boda commission: ${fmtUgx(r.commission)}`, `Your earnings before costs: ${fmtUgx(r.riderEarnings)}`, r.earningsNote);
+    }
+    lines.push('', 'Smart Boda');
+    return lines.filter((l) => l !== null).join('\n');
+  }
+
+  /** Emails the receipt to the passenger and the rider (when they have an email). Once per trip; never blocks the trip. */
+  async function emailReceipts(tripId) {
+    if (!mailer) return;
+    try {
+      const claimed = db
+        .prepare("UPDATE trips SET receipt_emailed_at = ? WHERE id = ? AND status = 'completed' AND receipt_emailed_at IS NULL")
+        .run(now(), tripId).changes;
+      if (claimed !== 1) return;
+      const row = getTripRow(tripId);
+      for (const [id, role] of [[row.passenger_id, 'passenger'], [row.captain_id, 'captain']]) {
+        const u = id ? getUser(id) : null;
+        if (!u?.email) continue;
+        const r = buildReceipt(row, role);
+        await mailer.send({ to: u.email, subject: `Your Smart Boda receipt ${r.number}`, text: receiptText(r, role, u.name) });
+      }
+    } catch (err) {
+      console.error(`Receipt email failed: ${err.message}`);
+    }
+  }
+
   function completeTrip(row, by, actorId) {
     const at = now();
     saveTransition(row, transitionTrip(rowToTrip(row), S.COMPLETED, { by, actorId, at }), at);
@@ -1214,6 +1308,7 @@ export function createApp({
       // The passenger pays the rider in cash; only the commission moves, from reserved credit to revenue.
       wallet.chargeCommission(db, { riderId: row.captain_id, tripId: row.id, commission: row.commission, at });
     }
+    setImmediate(() => void emailReceipts(row.id)); // after the trip is saved
   }
 
   /** A trip that ended without being completed gives its reserved commission back, once. */
@@ -1506,33 +1601,7 @@ export function createApp({
         row && (user.role === 'admin' || row.passenger_id === user.id || row.captain_id === user.id);
       if (!allowed) throw new HttpError(404, 'Trip not found');
       if (row.status !== 'completed') throw new HttpError(409, 'A receipt is ready once the trip is complete', 'not_complete');
-      const cap = row.captain_id ? getUser(row.captain_id) : null;
-      const prof = row.captain_id ? getProfile(row.captain_id) : null;
-      const digital = row.payment_method === 'wallet';
-      const receipt = {
-        number: `SB-${row.id.slice(0, 8).toUpperCase()}`,
-        tripId: row.id,
-        date: row.completed_at,
-        kind: row.kind,
-        pickup: row.pickup_label,
-        dropoff: row.dropoff_label,
-        distanceKm: round1(row.distance_km),
-        vehicleType: row.vehicle_type,
-        rider: cap ? { name: cap.name, plate: prof?.bike_plate ?? null } : null,
-        fare: row.fare,
-        nightPercent: row.night_percent,
-        paymentMethod: row.payment_method,
-        paymentStatus: digital ? 'Paid from Smart Boda wallet' : 'Cash paid to the rider',
-        pinVerified: Boolean(row.pin_verified),
-      };
-      if (user.role !== 'passenger') {
-        receipt.commission = row.commission;
-        receipt.commissionRate = row.commission_rate;
-        receipt.riderEarnings = row.captain_earnings;
-        receipt.earningsNote = digital
-          ? 'Paid through the app: this amount is payable to the rider.'
-          : 'Collected in cash by the rider. It does not pass through Smart Boda.';
-      }
+      const receipt = buildReceipt(row, user.role === 'passenger' ? 'passenger' : 'captain');
       return { receipt };
     },
     { roles: ['passenger', 'captain', 'admin'] },

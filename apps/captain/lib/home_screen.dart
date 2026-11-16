@@ -519,16 +519,20 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
           ),
         const SizedBox(height: 12),
-        FilledButton(
-          onPressed: _busy
-              ? null
-              : () => next == 'complete'
-                  ? _complete(t)
-                  : next == 'start'
-                      ? _start(t)
-                      : _act('/api/trips/${t.id}/$next'),
-          child: Text(buttonText),
-        ),
+        if (next == 'arrived')
+          FilledButton(
+            onPressed: _busy ? null : () => _act('/api/trips/${t.id}/$next'),
+            child: Text(buttonText),
+          )
+        else
+          // Starting and finishing a trip need a deliberate slide, not a tap.
+          SlideToConfirm(
+            key: ValueKey('${t.id}-$next'),
+            label: buttonText,
+            color: next == 'complete' ? Colors.green.shade700 : brandPrimary,
+            enabled: !_busy,
+            onConfirmed: () => next == 'complete' ? _complete(t) : _start(t),
+          ),
         if (t.status == 'accepted' || t.status == 'arrived')
           TextButton(
             onPressed: _busy ? null : () => _cancel(t),
