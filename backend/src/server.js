@@ -20,6 +20,7 @@ import { ensureAdmin } from './admin.js';
 import { photonPlaces } from './places.js';
 import { brevoMailer } from './mailer.js';
 import { livepayClient } from './livepay.js';
+import { fcmFromEnv } from './fcm.js';
 import { backupFromEnv, restoreIfMissing, startBackups } from './backup.js';
 
 const port = Number.parseInt(process.env.PORT ?? '8080', 10);
@@ -69,8 +70,12 @@ const livepayStatus = {
 };
 console.log(`LivePay top-ups: ${livepay ? 'on' : 'off'}`, JSON.stringify(livepayStatus));
 
+const push = fcmFromEnv(process.env.FIREBASE_SERVICE_ACCOUNT);
+console.log(`Push notifications: ${push ? 'on' : 'off'}`);
+
 const { server } = createApp({
   mailer,
+  push,
   livepay,
   livepayStatus,
   publicUrl: process.env.PUBLIC_URL?.trim().replace(/\/+$/, '') || null,

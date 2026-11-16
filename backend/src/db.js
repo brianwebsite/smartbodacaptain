@@ -142,6 +142,13 @@ CREATE TABLE IF NOT EXISTS topups (
 );
 CREATE INDEX IF NOT EXISTS topups_user ON topups(user_id, created_at);
 
+CREATE TABLE IF NOT EXISTS push_tokens (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS push_tokens_user ON push_tokens(user_id);
+
 CREATE TABLE IF NOT EXISTS password_resets (
   token_hash TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),

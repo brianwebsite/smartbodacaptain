@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api.dart';
 import 'models.dart';
+import 'push.dart';
 
 /// Who is signed in. Keeps the sign-in token on the phone between launches.
 class Session extends ChangeNotifier {
@@ -46,6 +47,7 @@ class Session extends ChangeNotifier {
         final u = AppUser.fromJson(r['user'] as Map<String, dynamic>);
         if (u.role == role) {
           user = u;
+          PushService.start(api);
         } else {
           await _clear();
         }
@@ -130,7 +132,7 @@ class Session extends ChangeNotifier {
     if (u.role != role) {
       api.token = token;
       try {
-        await api.post('/api/auth/logout');
+        await api.post('/api/auth/logout', {if (PushService.token != null) 'pushToken': PushService.token});
       } catch (_) {}
       api.token = null;
       throw ApiException(role == 'passenger'
@@ -142,6 +144,7 @@ class Session extends ChangeNotifier {
     await prefs.setBool(_seenKey, true);
     api.token = token;
     user = u;
+    PushService.start(api);
     notifyListeners();
   }
 

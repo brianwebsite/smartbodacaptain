@@ -48,6 +48,7 @@ export function createApp({
   places = null,
   mailer = null,
   livepay = null,
+  push = null,
   livepayStatus = null,
   publicUrl = null,
 }) {
@@ -80,6 +81,43 @@ export function createApp({
     history: JSON.parse(row.history),
   });
 
+  /** Sends a push notification to every phone the person is signed in on. Never blocks or fails a request. */
+  function notify(userId, { title, body, data = {} }, onlyIf = null) {
+    if (!push || !userId) return;
+    setImmediate(async () => {
+      try {
+        if (onlyIf && !onlyIf()) return; // the situation changed (or rolled back) before we got to send
+        const tokens = db.prepare('SELECT token FROM push_tokens WHERE user_id = ?').all(userId);
+        for (const { token } of tokens) {
+          try {
+            const r = await push.send(token, { title, body, data });
+            if (r === 'unregistered') db.prepare('DELETE FROM push_tokens WHERE token = ?').run(token);
+          } catch (err) {
+            console.error(`Push failed: ${err.message}`);
+          }
+        }
+      } catch (err) {
+        console.error(`Push failed: ${err.message}`);
+      }
+    });
+  }
+
+  /** The words for each step of a trip, sent to the passenger. */
+  function notifyTripStep(tripId, status) {
+    const row = getTripRow(tripId);
+    if (!row) return;
+    const cap = row.captain_id ? getUser(row.captain_id) : null;
+    const words = {
+      accepted: ['Captain on the way', `${cap?.name ?? 'Your captain'} accepted your request and is coming.`],
+      arrived: ['Your captain has arrived', 'Please head to your captain now.'],
+      in_progress: ['Trip started', 'Have a safe trip.'],
+      completed: ['Trip complete', 'Thank you for riding with Smart Boda. Please rate your captain.'],
+      no_captain: ['No captain found', 'Nobody nearby could take your request. Please try again.'],
+    }[status];
+    if (!words) return;
+    notify(row.passenger_id, { title: words[0], body: words[1], data: { type: 'trip', tripId, status } }, () => getTripRow(tripId)?.status === status);
+  }
+
   function saveTransition(oldRow, next, completedAt = null) {
     const res = db
       .prepare(
@@ -89,6 +127,7 @@ export function createApp({
       )
       .run(next.captainId, next.status, JSON.stringify(next.history), now(), completedAt, next.id, oldRow.status);
     if (res.changes !== 1) throw new HttpError(409, 'This trip just changed. Please refresh.', 'trip_changed');
+    notifyTripStep(next.id, next.status);
   }
 
   function activeTripForPassenger(userId) {
@@ -634,6 +673,22 @@ export function createApp({
     { roles: ['passenger'] },
   );
 
+  // The phone's push token, so Smart Boda can notify it when the app is closed.
+  router.add(
+    'PUT',
+    '/api/me/push-token',
+    ({ user, body }) => {
+      obj(body);
+      const token = text(body.token, 'token', { min: 20, max: 400 });
+      db.prepare(
+        `INSERT INTO push_tokens (token, user_id, updated_at) VALUES (?,?,?)
+         ON CONFLICT(token) DO UPDATE SET user_id = excluded.user_id, updated_at = excluded.updated_at`,
+      ).run(token, user.id, now());
+      return { ok: true, pushOn: Boolean(push) };
+    },
+    { roles: ['passenger', 'captain'] },
+  );
+
   // A second number Smart Boda can reach the person on, for example a relative.
   router.add(
     'PUT',
@@ -716,8 +771,9 @@ export function createApp({
   router.add(
     'POST',
     '/api/auth/logout',
-    ({ token }) => {
+    ({ token, body }) => {
       db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(token));
+      if (body && typeof body.pushToken === 'string') db.prepare('DELETE FROM push_tokens WHERE token = ?').run(body.pushToken);
       return { ok: true };
     },
     { roles: ['passenger', 'captain', 'admin'] },
@@ -772,6 +828,8 @@ export function createApp({
           reason, user.role, row.status, distM, row.id,
         );
         releaseIfReserved(row);
+        const other = user.role === 'passenger' ? row.captain_id : row.passenger_id;
+        notify(other, { title: 'Trip cancelled', body: user.role === 'passenger' ? 'The passenger cancelled this trip.' : 'Your captain cancelled this trip. You can request another ride.', data: { type: 'trip', tripId: row.id, status: 'cancelled' } }, () => getTripRow(row.id)?.status === 'cancelled');
         return { trip: tripView(getTripRow(row.id), user.role), user: meView(getUser(user.id)) };
       });
     },
@@ -828,6 +886,8 @@ export function createApp({
       db.prepare('INSERT INTO trip_messages (id, trip_id, sender_id, body, created_at) VALUES (?,?,?,?,?)').run(
         id, row.id, user.id, message, at,
       );
+      const to = row.passenger_id === user.id ? row.captain_id : row.passenger_id;
+      notify(to, { title: user.name, body: message.slice(0, 120), data: { type: 'message', tripId: row.id } }, () => Boolean(db.prepare('SELECT 1 FROM trip_messages WHERE id = ?').get(id)));
       return { status: 201, body: { message: { id, mine: true, body: message, createdAt: at } } };
     },
     { roles: ['passenger', 'captain'] },
@@ -977,7 +1037,18 @@ export function createApp({
           String(randomInt(0, 10000)).padStart(4, '0'), getFareConfig(db).commissionRate,
         );
       });
-      return { status: 201, body: { trip: tripView(getTripRow(id), 'passenger') } };
+      // Tell the nearest matching riders, even if their app is closed.
+      const created = getTripRow(id);
+      if (push) {
+        for (const r of rankingFor(created, candidateCaptains())) {
+          notify(r.id, {
+            title: created.kind === 'delivery' ? 'New delivery request' : 'New ride request',
+            body: `${created.pickup_label ?? 'A pickup near you'} · ${fmtUgx(created.fare)}`,
+            data: { type: 'offer', tripId: id },
+          }, () => getTripRow(id)?.status === 'requested');
+        }
+      }
+      return { status: 201, body: { trip: tripView(created, 'passenger') } };
     },
     { roles: ['passenger'] },
   );

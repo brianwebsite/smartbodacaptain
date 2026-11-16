@@ -16,11 +16,11 @@ const PICKUP = { lat: 0.355, lng: 32.615 };
 const DROPOFF = { lat: 0.39, lng: 32.64 };
 const NEAR = { lat: 0.3551, lng: 32.615 };
 
-async function harness({ start = '2026-11-16T10:00:00Z', mailer = null } = {}) {
+async function harness({ start = '2026-11-16T10:00:00Z', mailer = null, push = null } = {}) {
   const db = openDb(':memory:');
   const clock = { ms: Date.parse(start) };
   const { server } = createApp({
-    db, routing: estimateRouting(), mailer, now: () => new Date(clock.ms).toISOString(),
+    db, routing: estimateRouting(), mailer, push, now: () => new Date(clock.ms).toISOString(),
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -476,4 +476,72 @@ test('receipt emails go to passenger and rider once; a phone is needed to reques
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(sent.length, 1);
   await h.close();
+});
+
+test('push notifications reach the right phone at each step, and dead tokens are dropped', async () => {
+  const sent = [];
+  const push = {
+    send: async (token, m) => {
+      sent.push({ token, ...m });
+      return token === 'dead-token-dead-token-dead' ? 'unregistered' : 'sent';
+    },
+  };
+  const h = await harness({ push });
+  const wait = () => new Promise((r) => setTimeout(r, 40));
+  const pax = await h.passenger();
+  const cap = await h.captain();
+  const stranger = await h.captain();
+  assert.equal((await h.call('PUT', '/api/me/push-token', { token: 'short' }, pax.token)).status, 400);
+  await h.call('PUT', '/api/me/push-token', { token: 'passenger-phone-token-0000001' }, pax.token);
+  await h.call('PUT', '/api/me/push-token', { token: 'captain-phone-token-000000001' }, cap.token);
+  await h.call('PUT', '/api/me/push-token', { token: 'dead-token-dead-token-dead' }, stranger.token);
+
+  const t = await h.request(pax);
+  await wait();
+  const offers = sent.filter((m) => m.data.type === 'offer');
+  assert.deepEqual(offers.map((m) => m.token).sort(), ['captain-phone-token-000000001', 'dead-token-dead-token-dead']);
+  // the dead token is removed so we stop trying it
+  assert.equal(h.db.prepare("SELECT COUNT(*) AS c FROM push_tokens WHERE token = 'dead-token-dead-token-dead'").get().c, 0);
+
+  sent.length = 0;
+  await h.accept(cap, t.body.trip.id);
+  await h.step(cap, t.body.trip.id, 'arrived');
+  await wait();
+  const toPassenger = sent.filter((m) => m.token === 'passenger-phone-token-0000001').map((m) => m.title);
+  assert.deepEqual(toPassenger, ['Captain on the way', 'Your captain has arrived']);
+
+  sent.length = 0;
+  await h.call('POST', `/api/trips/${t.body.trip.id}/messages`, { body: 'I am at the gate' }, pax.token);
+  await h.call('POST', `/api/trips/${t.body.trip.id}/cancel`, {}, pax.token);
+  await wait();
+  assert.ok(sent.some((m) => m.token === 'captain-phone-token-000000001' && m.body === 'I am at the gate'));
+  assert.ok(sent.some((m) => m.token === 'captain-phone-token-000000001' && m.title === 'Trip cancelled'));
+  assert.ok(!sent.some((m) => m.token === 'passenger-phone-token-0000001')); // you are not told about your own action
+  await h.close();
+});
+
+test('FCM client signs with the service account and sends a notification', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const { fcmFromEnv } = await import('../src/fcm.js');
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+  const calls = [];
+  const fetchImpl = async (url, opts) => {
+    calls.push({ url: String(url), opts });
+    if (String(url).includes('oauth2')) return { ok: true, status: 200, json: async () => ({ access_token: 'at-1', expires_in: 3600 }) };
+    return { ok: true, status: 200 };
+  };
+  assert.equal(fcmFromEnv(''), null);
+  assert.equal(fcmFromEnv('not json'), null);
+  const fcm = fcmFromEnv(JSON.stringify({ client_email: 'x@p.iam.gserviceaccount.com', private_key: privateKey, project_id: 'proj-1' }), { fetchImpl });
+  assert.equal(await fcm.send('tok', { title: 'Hi', body: 'There', data: { tripId: 5 } }), 'sent');
+  await fcm.send('tok2', { title: 'Hi', body: 'Again' });
+  assert.equal(calls.filter((c) => c.url.includes('oauth2')).length, 1); // the access token is reused
+  const sentCall = calls.find((c) => c.url.includes('/projects/proj-1/messages:send'));
+  assert.equal(sentCall.opts.headers.Authorization, 'Bearer at-1');
+  const msg = JSON.parse(sentCall.opts.body).message;
+  assert.equal(msg.notification.title, 'Hi');
+  assert.equal(msg.data.tripId, '5');
+  const jwt = String(calls[0].opts.body.get('assertion')).split('.');
+  assert.equal(jwt.length, 3);
+  assert.equal(JSON.parse(Buffer.from(jwt[1], 'base64url')).scope, 'https://www.googleapis.com/auth/firebase.messaging');
 });
