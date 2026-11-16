@@ -7,7 +7,7 @@ import 'session.dart';
 import 'theme.dart';
 import 'vehicle.dart';
 
-enum _Stage { welcome, method, questions }
+enum _Stage { welcome, method, questions, login }
 
 enum _Mode { signUp, signIn }
 
@@ -84,6 +84,9 @@ class _AuthScreenState extends State<AuthScreen> {
   /// True when this phone has had an account before: then "Sign in" is the main button.
   bool _returning = false;
 
+  /// False until we know whether this phone has had an account (avoids a flash of the wrong screen).
+  bool _checked = false;
+
   bool get _isCaptain => widget.session.role == 'captain';
   bool get _googleAvailable => !_isCaptain && _googleClientId != null;
 
@@ -91,7 +94,16 @@ class _AuthScreenState extends State<AuthScreen> {
   void initState() {
     super.initState();
     Session.hasSignedInBefore().then((v) {
-      if (mounted && v) setState(() => _returning = true);
+      if (!mounted) return;
+      setState(() {
+        _checked = true;
+        if (v) {
+          // Someone who already has an account only needs to log in.
+          _returning = true;
+          _mode = _Mode.signIn;
+          _stage = _Stage.login;
+        }
+      });
     });
     if (!_isCaptain) {
       widget.session.googleServerClientId().then((id) {
@@ -252,6 +264,9 @@ class _AuthScreenState extends State<AuthScreen> {
           _stage = _Stage.method;
         }
       } else if (_stage == _Stage.method) {
+        _stage = _returning ? _Stage.login : _Stage.welcome;
+        if (_returning) _mode = _Mode.signIn;
+      } else if (_stage == _Stage.login) {
         _stage = _Stage.welcome;
       }
     });
@@ -349,8 +364,9 @@ class _AuthScreenState extends State<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (!_checked) return const Scaffold(body: SizedBox.shrink());
     return PopScope(
-      canPop: _stage == _Stage.welcome,
+      canPop: _stage == _Stage.welcome || _stage == _Stage.login,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _back();
       },
@@ -364,6 +380,7 @@ class _AuthScreenState extends State<AuthScreen> {
                 _Stage.welcome => _welcome(context),
                 _Stage.method => _methodScreen(context),
                 _Stage.questions => _questionScreen(context),
+                _Stage.login => _loginScreen(context),
               },
             ),
           ),
@@ -444,7 +461,13 @@ class _AuthScreenState extends State<AuthScreen> {
           ),
           const Spacer(),
           if (_returning) ...[
-            FilledButton(onPressed: () => _go(_Mode.signIn), child: const Text('Sign in')),
+            FilledButton(
+                onPressed: () => setState(() {
+                      _mode = _Mode.signIn;
+                      _stage = _Stage.login;
+                      _error = null;
+                    }),
+                child: const Text('Sign in')),
             const SizedBox(height: 12),
             OutlinedButton(onPressed: () => _go(_Mode.signUp), child: const Text('Create a new account')),
           ] else ...[
@@ -453,6 +476,111 @@ class _AuthScreenState extends State<AuthScreen> {
             OutlinedButton(onPressed: () => _go(_Mode.signIn), child: const Text('I already have an account')),
           ],
           const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  /// For someone who already has an account: one screen, email or phone and password.
+  Widget _loginScreen(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final id = _controller('identifier');
+    final pw = _controller('password');
+    Future<void> submit() async {
+      if (id.text.trim().length < 3) {
+        setState(() => _error = 'Enter the email or phone number you signed up with.');
+        return;
+      }
+      if (pw.text.isEmpty) {
+        setState(() => _error = 'Enter your password.');
+        return;
+      }
+      _mode = _Mode.signIn;
+      await _finish();
+    }
+
+    return _frame(
+      back: false,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: ListView(
+              children: [
+                const SizedBox(height: 16),
+                Center(
+                  child: Container(
+                    height: 76,
+                    width: 76,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(colors: [brandPrimary, brandDark], begin: Alignment.topLeft, end: Alignment.bottomRight),
+                    ),
+                    child: const Icon(Icons.two_wheeler, size: 44, color: Colors.white),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text('Welcome back',
+                    textAlign: TextAlign.center, style: t.headlineMedium?.copyWith(fontWeight: FontWeight.w900, color: brandPrimary)),
+                const SizedBox(height: 28),
+                TextField(
+                  controller: id,
+                  enabled: !_busy,
+                  keyboardType: TextInputType.emailAddress,
+                  autocorrect: false,
+                  textInputAction: TextInputAction.next,
+                  onChanged: (_) => setState(() => _error = null),
+                  decoration: const InputDecoration(labelText: 'Email or phone number', prefixIcon: Icon(Icons.person_outline)),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: pw,
+                  enabled: !_busy,
+                  obscureText: _hideSecret,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _busy ? null : submit(),
+                  onChanged: (_) => setState(() => _error = null),
+                  decoration: InputDecoration(
+                    labelText: 'Password',
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    suffixIcon: IconButton(
+                      icon: Icon(_hideSecret ? Icons.visibility : Icons.visibility_off),
+                      onPressed: () => setState(() => _hideSecret = !_hideSecret),
+                    ),
+                  ),
+                ),
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(onPressed: _busy ? null : _forgot, child: const Text('Forgot password?')),
+                ),
+                if (_googleAvailable) ...[
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : _google,
+                    icon: const Icon(Icons.g_mobiledata, size: 32),
+                    label: const Text('Continue with Google'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          FilledButton(
+            onPressed: _busy ? null : submit,
+            child: _busy
+                ? const SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Text('Sign in'),
+          ),
+          TextButton(
+            onPressed: _busy ? null : () => _go(_Mode.signUp),
+            child: const Text('New here? Create an account'),
+          ),
         ],
       ),
     );
