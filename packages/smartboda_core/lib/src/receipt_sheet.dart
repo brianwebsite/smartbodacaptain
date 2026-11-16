@@ -71,7 +71,6 @@ class _ReceiptSheetState extends State<_ReceiptSheet> {
     } else {
       final rider = r['rider'] as Map<String, dynamic>?;
       final date = r['date'] == null ? null : DateTime.tryParse(r['date'] as String);
-      final night = (r['nightPercent'] as num?)?.toInt() ?? 0;
       body = Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -84,7 +83,6 @@ class _ReceiptSheetState extends State<_ReceiptSheet> {
           _row('Distance', '${r['distanceKm']} km'),
           if (rider != null) _row('Rider', '${rider['name']} · ${rider['plate'] ?? ''}'),
           const Divider(height: 24),
-          if (night > 0) _row('Night fare', '+$night% included'),
           _row('Fare', ugx(r['fare'] as num), bold: true),
           _row('Payment', r['paymentStatus'] as String),
           if (r['commission'] != null) ...[

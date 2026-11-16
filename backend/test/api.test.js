@@ -322,11 +322,27 @@ test('a captain whose location report is old gets no offers', async () => {
   await h.close();
 });
 
+test('a request made while nobody is online waits, and a captain who comes online later sees it', async () => {
+  const h = await harness();
+  const adminToken = await h.admin();
+  const p = await h.passenger();
+  const { body } = await h.call('POST', '/api/trips', { pickup: PICKUP, dropoff: DROPOFF }, p.token);
+  h.clock.ms += 5 * 60 * 1000; // five minutes, still nobody online
+  const still = await h.call('GET', '/api/passenger/current', undefined, p.token);
+  assert.equal(still.body.trip.status, 'requested');
+  const c = await h.approvedCaptain(adminToken, 'Late'); // goes online now
+  const offers = (await h.call('GET', '/api/captain/offers', undefined, c.token)).body.offers;
+  assert.equal(offers.length, 1);
+  assert.equal(offers[0].trip.id, body.trip.id);
+  assert.equal((await h.call('POST', `/api/trips/${body.trip.id}/accept`, {}, c.token)).status, 200);
+  await h.close();
+});
+
 test('a request nobody accepts ends as no_captain', async () => {
   const h = await harness();
   const p = await h.passenger();
   const { body } = await h.call('POST', '/api/trips', { pickup: PICKUP, dropoff: DROPOFF }, p.token);
-  h.clock.ms += 91 * 1000;
+  h.clock.ms += 601 * 1000; // a request waits ten minutes
   const cur = await h.call('GET', '/api/passenger/current', undefined, p.token);
   assert.equal(cur.body.trip, null);
   const trip = await h.call('GET', `/api/trips/${body.trip.id}`, undefined, p.token);

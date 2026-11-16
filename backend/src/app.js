@@ -1262,9 +1262,24 @@ export function createApp({
       if (online) {
         captainGate(user.id);
         const p = point(body, 'location');
+        const wasOnline = getProfile(user.id)?.online;
         db.prepare('UPDATE captain_profiles SET online = 1, lat = ?, lng = ?, location_at = ? WHERE user_id = ?').run(
           p.lat, p.lng, now(), user.id,
         );
+        // Passengers who asked while nobody was online are still waiting: tell this captain.
+        if (!wasOnline && push) {
+          expireStaleTrips();
+          const captains = candidateCaptains();
+          const waiting = db.prepare('SELECT * FROM trips WHERE status = ? ORDER BY created_at').all(S.REQUESTED)
+            .filter((row) => rankingFor(row, captains).some((c) => c.id === user.id));
+          if (waiting.length) {
+            notify(user.id, {
+              title: waiting.length === 1 ? 'A passenger is waiting' : `${waiting.length} passengers are waiting`,
+              body: `${waiting[0].pickup_label ?? 'A pickup near you'} · ${fmtUgx(waiting[0].fare)}`,
+              data: { type: 'offer', tripId: waiting[0].id },
+            });
+          }
+        }
       } else {
         if (activeTripForCaptain(user.id)) throw new HttpError(409, 'Finish your current trip first', 'on_trip');
         db.prepare('UPDATE captain_profiles SET online = 0 WHERE user_id = ?').run(user.id);
@@ -1354,7 +1369,6 @@ export function createApp({
       `To: ${r.dropoff ?? 'Drop-off point'}`,
       `Distance: ${r.distanceKm} km`,
       r.rider ? `${forRole === 'passenger' ? 'Rider' : 'Rider (you)'}: ${r.rider.name}${r.rider.plate ? ' · ' + r.rider.plate : ''}` : null,
-      r.nightPercent > 0 ? `Night fare: +${r.nightPercent}% included` : null,
       `Fare: ${fmtUgx(r.fare)}`,
       `Payment: ${r.paymentStatus}`,
     ];

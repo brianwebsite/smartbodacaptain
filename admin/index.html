@@ -396,7 +396,7 @@ async function settings(body) {
     nightPct: field('Night fare increase (%)', s.night.percent, '0.5'),
     nightFrom: field('Night starts (hour, 0-23, Uganda time)', s.night.startHour),
     nightTo: field('Night ends (hour, 0-23)', s.night.endHour),
-    stale: field('Ignore locations older than (seconds)', s.dispatch.staleAfterSeconds), offer: field('Give up finding a captain after (seconds)', s.dispatch.offerSeconds),
+    stale: field('Ignore locations older than (seconds)', s.dispatch.staleAfterSeconds), offer: field('Keep a ride request open for (seconds)', s.dispatch.offerSeconds),
   };
   const v = (k) => Number(f[k][1].value);
   const form = h('form', { class: 'grid' }, Object.values(f).map((x) => x[0]), h('h3', { style: 'grid-column:1/-1;margin:12px 0 0' }, 'App contact details and social links (shown in the apps under Account)'), Object.values(t).map((x) => x[0]),

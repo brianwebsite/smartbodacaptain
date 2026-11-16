@@ -506,8 +506,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ? '${ugx(t.fare)} paid from the passenger wallet · ${ugx(t.captainEarnings ?? t.fare)} goes to your wallet · ${t.distanceKm} km'
               : '${ugx(t.fare)} cash · you keep ${ugx(t.captainEarnings ?? t.fare)} · ${t.distanceKm} km',
         ),
-        if (t.nightPercent > 0)
-          Text('Night fare +${t.nightPercent}%', style: const TextStyle(color: brandPrimary, fontWeight: FontWeight.w600)),
         const SizedBox(height: 4),
         const Text(
           'Your phone also starts and finishes the trip by itself when you reach the pickup, drive off, and reach the drop-off.',
@@ -582,7 +580,7 @@ class _OfferCard extends StatelessWidget {
               Expanded(child: Text(t.dropoff.text, maxLines: 1, overflow: TextOverflow.ellipsis)),
             ]),
             const SizedBox(height: 4),
-            Text('Pickup is ${offer.distanceToPickupKm} km from you · about ${etaMinutes(offer.distanceToPickupKm)} min · fare ${ugx(t.fare)} ${t.paymentMethod == 'wallet' ? 'from wallet' : 'cash'}${t.nightPercent > 0 ? ' · night +${t.nightPercent}%' : ''}'),
+            Text('Pickup is ${offer.distanceToPickupKm} km from you · about ${etaMinutes(offer.distanceToPickupKm)} min · fare ${ugx(t.fare)} ${t.paymentMethod == 'wallet' ? 'from wallet' : 'cash'}'),
             const SizedBox(height: 8),
             Row(
               children: [

@@ -8,7 +8,7 @@ export const DEFAULT_DISPATCH = Object.freeze({
   maxKm: 3, // how far from the pickup a captain may be and still get the offer
   limit: 5, // how many nearest captains are offered a trip
   staleAfterSeconds: 60, // location reports older than this are ignored
-  offerSeconds: 50, // a request nobody accepts in this time becomes "no captain"
+  offerSeconds: 600, // a request stays open this long, so a captain who goes online later still sees it
 });
 
 function read(db, key, defaults) {
@@ -76,7 +76,7 @@ export function updateSettings(db, body) {
       next.staleAfterSeconds = int(d.staleAfterSeconds, 'staleAfterSeconds', { min: 10, max: 600 });
     }
     if (d.offerSeconds !== undefined) {
-      next.offerSeconds = int(d.offerSeconds, 'offerSeconds', { min: 20, max: 600 });
+      next.offerSeconds = int(d.offerSeconds, 'offerSeconds', { min: 20, max: 3600 });
     }
     write(db, 'dispatch', next);
   }
