@@ -6,8 +6,8 @@
 <title>Smart Boda Admin</title>
 <style>
   :root {
-    --green: #0b7a4b; --green-dark: #07583a; --amber: #f5a623; --ink: #1c2420; --muted: #5d6b64;
-    --line: #dde5e0; --bg: #f4f7f5; --card: #ffffff; --red: #b3261e; --blue: #1f5fbf;
+    --green: #4b1fa8; --green-dark: #33147a; --amber: #ff8a00; --ink: #1c2420; --muted: #5d6b64;
+    --line: #e2dcef; --bg: #f7f4fc; --card: #ffffff; --red: #b3261e; --blue: #1f5fbf;
   }
   * { box-sizing: border-box; }
   body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--ink); background: var(--bg); }
@@ -29,9 +29,9 @@
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
   .pill { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 12px; font-weight: 600; background: #e8eeea; color: var(--ink); }
-  .pill.active, .pill.completed, .pill.in_progress { background: #d8f0e2; color: var(--green-dark); }
+  .pill.active, .pill.completed, .pill.in_progress, .pill.ok { background: #d8f0e2; color: #0b6b3f; }
   .pill.pending, .pill.requested, .pill.accepted, .pill.arrived { background: #fdecc8; color: #7a5200; }
-  .pill.suspended, .pill.cancelled, .pill.no_captain { background: #f8d7d4; color: var(--red); }
+  .pill.suspended, .pill.cancelled, .pill.no_captain, .pill.paused, .pill.blocked { background: #f8d7d4; color: var(--red); }
   button.act { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 5px 10px; cursor: pointer; margin-right: 4px; font-size: 13px; }
   button.act.good { background: var(--green); color: #fff; border-color: var(--green); }
   button.act.bad { color: var(--red); border-color: #e7b5b1; }
@@ -124,7 +124,7 @@ function renderLogin(message) {
 }
 
 // ---------- shell ----------
-const TABS = [['overview', 'Overview'], ['captains', 'Captains'], ['live', 'Live'], ['trips', 'Trips'], ['settings', 'Settings']];
+const TABS = [['overview', 'Overview'], ['captains', 'Captains'], ['users', 'Users & wallets'], ['live', 'Live'], ['trips', 'Trips'], ['settings', 'Settings']];
 
 function renderShell() {
   const nav = h('nav', {}, TABS.map(([id, label]) => {
@@ -137,7 +137,7 @@ function renderShell() {
     h('header', {}, h('h1', {}, 'Smart Boda Admin'), h('button', { onclick: signOut }, 'Sign out')),
     nav, body);
   clearInterval(state.timer);
-  const views = { overview, captains, live, trips, settings };
+  const views = { overview, captains, users, live, trips, settings };
   const run = () => views[state.tab](body).catch((e) => { if (e.message !== 'Signed out') body.replaceChildren(h('div', { class: 'err' }, e.message)); });
   run();
   if (state.tab === 'live' || state.tab === 'overview') state.timer = setInterval(run, 6000);
@@ -171,6 +171,7 @@ async function overview(body) {
       card(ugx(s.grossTotal), 'Fares, all time'),
       card(ugx(s.commissionTotal), 'Commission earned, all time'),
       card(ugx(s.commissionTotal - s.settledTotal), 'Commission still owed by captains'),
+      card(ugx(s.walletTotal), 'Money held in wallets'),
       card(s.captains, 'Captains registered'),
       card(s.passengers, 'Passengers registered')));
 }
@@ -193,10 +194,17 @@ async function captains(body) {
     h('td', {}, c.stageName || ''),
     h('td', {}, pill(c.status), c.online ? h('div', { class: 'muted' }, 'online') : null),
     h('td', {}, c.trips + ' trips', h('div', { class: 'muted' }, c.avgRating == null ? 'no ratings' : c.avgRating + ' / 5')),
-    h('td', {}, ugx(c.commissionOwed)),
+    h('td', {}, ugx(c.commissionOwed), h('div', { class: 'muted' }, 'wallet ' + ugx(c.walletBalance))),
+    h('td', {}, pill(c.standing || 'ok')),
     h('td', {},
       c.status !== 'active' ? act('Approve', 'good', () => api('/api/admin/captains/' + c.id + '/approve', { method: 'POST', body: {} })) : null,
       c.status !== 'suspended' ? act('Suspend', 'bad', () => { if (!confirm('Suspend ' + c.name + '?')) throw new Error('Cancelled'); return api('/api/admin/captains/' + c.id + '/suspend', { method: 'POST', body: {} }); }) : null,
+      c.walletBalance > 0 ? act('Pay out wallet', '', async () => {
+        const v = prompt('Pay out to ' + c.name + ' (UGX). Wallet: ' + c.walletBalance + '. Send the money first, then record it here.');
+        if (!v) throw new Error('Cancelled');
+        const amount = Number.parseInt(v.replace(/[, ]/g, ''), 10);
+        await api('/api/admin/captains/' + c.id + '/payout', { method: 'POST', body: { amount, note: prompt('Note (for example MoMo reference)') || '' } });
+      }) : null,
       c.commissionOwed > 0 ? act('Record payment', '', async () => {
         const v = prompt('Commission paid by ' + c.name + ' (UGX). Owed: ' + c.commissionOwed);
         if (!v) throw new Error('Cancelled');
@@ -208,8 +216,46 @@ async function captains(body) {
     h('h2', {}, 'Captains'), filters,
     h('div', { class: 'panel' }, list.length === 0 ? h('div', { class: 'empty' }, 'No captains here yet.') :
       h('table', {},
-        h('thead', {}, h('tr', {}, ['Captain', 'Bike', 'Documents to check', 'Stage', 'Status', 'Record', 'Owes', 'Actions'].map((t) => h('th', {}, t)))),
+        h('thead', {}, h('tr', {}, ['Captain', 'Bike', 'Documents to check', 'Stage', 'Status', 'Record', 'Owes / wallet', 'Standing', 'Actions'].map((t) => h('th', {}, t)))),
         h('tbody', {}, rows))));
+}
+
+// ---------- users & wallets ----------
+async function users(body) {
+  const box = h('input', { type: 'search', placeholder: 'Search name, phone or email', value: state.userQuery || '' });
+  const out = h('div', { class: 'panel' });
+  const load = async () => {
+    state.userQuery = box.value;
+    const { users: list } = await api('/api/admin/users?q=' + encodeURIComponent(box.value.trim()));
+    const act = (label, cls, fn) => h('button', { class: 'act ' + cls, onclick: async (e) => {
+      e.target.disabled = true;
+      try { await fn(); await load(); } catch (ex) { if (ex.message !== 'Cancelled') alert(ex.message); e.target.disabled = false; }
+    } }, label);
+    out.replaceChildren(list.length === 0 ? h('div', { class: 'empty' }, 'Nobody found.') :
+      h('table', {}, h('thead', {}, h('tr', {}, ['Person', 'Role', 'Wallet', 'Actions'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, list.map((u) => h('tr', {},
+          h('td', {}, h('strong', {}, u.name), h('div', { class: 'muted' }, [u.phone, u.email].filter(Boolean).join(' · '))),
+          h('td', {}, u.role), h('td', {}, ugx(u.walletBalance)),
+          h('td', {},
+            act('Add money', 'good', async () => {
+              const v = prompt('Add to ' + u.name + "'s wallet (UGX). Use a minus sign to take money back.");
+              if (!v) throw new Error('Cancelled');
+              const amount = Number.parseInt(v.replace(/[, ]/g, ''), 10);
+              await api('/api/admin/users/' + u.id + '/wallet', { method: 'POST', body: { amount, note: prompt('Note (for example MoMo reference)') || '' } });
+            }),
+            act('Reset password', '', async () => {
+              const pw = prompt('New password for ' + u.name + ' (at least 6 characters). Tell them privately.');
+              if (!pw) throw new Error('Cancelled');
+              await api('/api/admin/users/' + u.id + '/password', { method: 'POST', body: { password: pw } });
+              alert('Password changed. They have been signed out everywhere.');
+            })))))));
+  };
+  let timer;
+  box.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => load().catch(() => {}), 300); });
+  body.replaceChildren(h('h2', {}, 'Users & wallets'),
+    h('p', { class: 'muted' }, 'Until mobile-money top-up is switched on, you can add money to a passenger wallet after they pay you, and reset passwords for people who cannot get the email code.'),
+    h('div', { class: 'panel' }, box), out);
+  await load();
 }
 
 // ---------- live ----------
@@ -227,7 +273,7 @@ async function live(body) {
 }
 
 // ---------- trips ----------
-const VEHICLE_NAMES = { boda: 'Boda', electric_boda: 'Electric boda', car: 'Car' };
+const VEHICLE_NAMES = { boda: 'Boda', electric_boda: 'Electric boda', car: 'Car (3 seats)', car_xl: 'Car XL (6 seats)' };
 const vehicleName = (t) => VEHICLE_NAMES[t] || t || '';
 const CANCEL_NAMES = {
   changed_mind: 'Changed mind', wait_too_long: 'Waited too long', captain_far: 'Captain too far', wrong_pickup: 'Wrong pickup/drop-off',
@@ -241,8 +287,9 @@ function tripTable(list) {
     h('tbody', {}, list.map((t) => h('tr', {},
       h('td', {}, when(t.createdAt)),
       h('td', {}, pill(t.status), t.status === 'cancelled' ? h('div', { class: 'muted' }, (t.cancelledBy || '') + (t.cancelReason ? ': ' + (CANCEL_NAMES[t.cancelReason] || t.cancelReason) : '')) : null),
-      h('td', {}, vehicleName(t.vehicleType)),
-      h('td', {}, t.passenger.name, h('div', { class: 'muted' }, t.passenger.phone)),
+      h('td', {}, vehicleName(t.vehicleType),
+        h('div', { class: 'muted' }, [t.kind === 'delivery' ? 'Delivery: ' + (t.deliveryItem || '') : 'Ride', t.paymentMethod === 'wallet' ? 'wallet' : 'cash', t.nightPercent ? '+' + t.nightPercent + '% night' : '', t.autoStarted ? 'auto-started' : ''].filter(Boolean).join(' · '))),
+      h('td', {}, t.passenger.name, h('div', { class: 'muted' }, t.passenger.phone || 'email only')),
       h('td', {}, t.captain ? [t.captain.name, h('div', { class: 'muted' }, t.captain.bikePlate)] : h('span', { class: 'muted' }, 'none')),
       h('td', {}, mapLink(t.pickup.lat, t.pickup.lng, place(t.pickup))),
       h('td', {}, mapLink(t.dropoff.lat, t.dropoff.lng, place(t.dropoff))),
@@ -269,7 +316,13 @@ async function settings(body) {
     maxKm: field('Offer trips to captains within (km)', s.dispatch.maxKm, '0.1'), limit: field('Nearest captains offered each trip', s.dispatch.limit),
     mBoda: field('Boda price level (1 = base fare)', s.vehicles.boda.multiplier, '0.05'),
     mElectric: field('Electric boda price level', s.vehicles.electric_boda.multiplier, '0.05'),
-    mCar: field('Car price level (2 = double)', s.vehicles.car.multiplier, '0.05'),
+    mCar: field('Car (3 seats) price level (2 = double)', s.vehicles.car.multiplier, '0.05'),
+    mCarXl: field('Car XL (6 seats) price level', s.vehicles.car_xl.multiplier, '0.05'),
+    delivery: field('Delivery price level (1 = same as a ride)', s.limits.deliveryMultiplier, '0.05'),
+    nightPct: field('Night fare increase (%)', s.night.percent, '0.5'),
+    nightFrom: field('Night starts (hour, 0-23, Uganda time)', s.night.startHour),
+    nightTo: field('Night ends (hour, 0-23)', s.night.endHour),
+    debt: field('Captain debt limit: cannot go online above (UGX owed)', s.limits.captainDebtLimit),
     stale: field('Ignore locations older than (seconds)', s.dispatch.staleAfterSeconds), offer: field('Give up finding a captain after (seconds)', s.dispatch.offerSeconds),
   };
   const v = (k) => Number(f[k][1].value);
@@ -280,7 +333,9 @@ async function settings(body) {
     try {
       await api('/api/admin/settings', { method: 'PUT', body: {
         fare: { baseFare: v('baseFare'), perKm: v('perKm'), perMinute: v('perMinute'), minimumFare: v('minimumFare'), commissionRate: v('commission') / 100, roundTo: v('roundTo') },
-        vehicles: { boda: { multiplier: v('mBoda') }, electric_boda: { multiplier: v('mElectric') }, car: { multiplier: v('mCar') } },
+        vehicles: { boda: { multiplier: v('mBoda') }, electric_boda: { multiplier: v('mElectric') }, car: { multiplier: v('mCar') }, car_xl: { multiplier: v('mCarXl') } },
+        night: { percent: v('nightPct'), startHour: v('nightFrom'), endHour: v('nightTo') },
+        limits: { captainDebtLimit: v('debt'), deliveryMultiplier: v('delivery') },
         dispatch: { maxKm: v('maxKm'), limit: v('limit'), staleAfterSeconds: v('stale'), offerSeconds: v('offer') } } });
       status.textContent = 'Saved. New trips use these numbers.';
     } catch (ex) { status.className = 'err'; status.textContent = ex.message; }
