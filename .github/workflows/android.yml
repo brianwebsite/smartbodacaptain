@@ -74,7 +74,13 @@ jobs:
 
       - name: Build release APK
         working-directory: apps/${{ matrix.app }}
-        run: flutter build apk --release --dart-define=API_BASE_URL="$API_BASE_URL"
+        # Gradle sometimes fails to download Kotlin plugins from plugins.gradle.org. Trying again works.
+        run: |
+          for attempt in 1 2 3; do
+            flutter build apk --release --dart-define=API_BASE_URL="$API_BASE_URL" && exit 0
+            echo "Build attempt $attempt failed, trying again"; sleep 10
+          done
+          exit 1
 
       - name: Name the APK
         run: cp apps/${{ matrix.app }}/build/app/outputs/flutter-apk/app-release.apk smartboda-${{ matrix.app }}.apk
