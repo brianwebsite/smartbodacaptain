@@ -1,3 +1,5 @@
+import 'package:latlong2/latlong.dart';
+
 class Place {
   const Place({required this.lat, required this.lng, this.label});
 
@@ -279,10 +281,14 @@ class FareEstimate {
     required this.options,
     this.nightPercent = 0,
     this.walletAvailable = 0,
+    this.path,
   });
 
   final int nightPercent;
   final int walletAvailable;
+
+  /// The road from pickup to drop-off, when the server could look it up.
+  final List<LatLng>? path;
   final double distanceKm;
   final int durationMin;
   final String source;
@@ -303,6 +309,11 @@ class FareEstimate {
         source: j['source'] as String,
         nightPercent: (j['nightPercent'] as num?)?.toInt() ?? 0,
         walletAvailable: ((j['wallet'] as Map<String, dynamic>?)?['available'] as num?)?.toInt() ?? 0,
+        path: j['path'] is List
+            ? (j['path'] as List<dynamic>)
+                .map((p) => LatLng(((p as List<dynamic>)[0] as num).toDouble(), (p[1] as num).toDouble()))
+                .toList()
+            : null,
         options: (j['options'] as List<dynamic>)
             .map((o) => FareOption.fromJson(o as Map<String, dynamic>))
             .toList(),

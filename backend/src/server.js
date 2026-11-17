@@ -46,7 +46,11 @@ const backups = backup ? startBackups({ db, ...backup }) : null;
 
 ensureAdmin(db, process.env);
 
-const routing = chooseRouting({ apiKey: process.env.GOOGLE_MAPS_API_KEY });
+const routing = chooseRouting({
+  apiKey: process.env.GOOGLE_MAPS_API_KEY,
+  osrmUrl: process.env.OSRM_URL?.trim(),
+  osrm: process.env.OSRM?.trim().toLowerCase() !== 'off',
+});
 console.log(`Routing: ${routing.name}`);
 
 const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim() || null;

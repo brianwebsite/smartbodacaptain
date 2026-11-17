@@ -20,6 +20,11 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
   ApiClient get _api => widget.session.api;
+  late final RouteFinder _roads = RouteFinder(_api);
+
+  void _redraw() {
+    if (mounted) setState(() {});
+  }
 
   final MapController _map = MapController();
   Timer? _tripTimer;
@@ -625,19 +630,23 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       final pickup = LatLng(t.pickup.lat, t.pickup.lng);
       final dropoff = LatLng(t.dropoff.lat, t.dropoff.lng);
       if (t.status == 'accepted' && cap != null) {
-        return [Polyline(points: [cap, pickup], strokeWidth: 5, color: brandPrimary)];
+        return [RouteFinder.draw(_roads.line(cap, pickup, _redraw))];
       }
       if (t.status == 'in_progress' && cap != null) {
-        return [Polyline(points: [cap, dropoff], strokeWidth: 5, color: brandPrimary)];
+        return [RouteFinder.draw(_roads.line(cap, dropoff, _redraw))];
       }
       if (t.status == 'requested') {
-        return [Polyline(points: [pickup, dropoff], strokeWidth: 3, color: Colors.black38)];
+        return [RouteFinder.draw(_roads.line(pickup, dropoff, _redraw), color: Colors.black54, width: 4)];
       }
       return const [];
     }
     final pu = _pickup, dr = _dropoff;
     if (pu != null && dr != null) {
-      return [Polyline(points: [LatLng(pu.lat, pu.lng), LatLng(dr.lat, dr.lng)], strokeWidth: 3, color: Colors.black38)];
+      final a = LatLng(pu.lat, pu.lng), b = LatLng(dr.lat, dr.lng);
+      final est = _estimate;
+      if (est == null) return [RouteFinder.draw([a, b], color: Colors.black38, width: 3)]; // the fare is still being worked out
+      if (est.path != null) _roads.remember(a, b, est.path); // the estimate already carried the road
+      return [RouteFinder.draw(_roads.line(a, b, _redraw))];
     }
     return const [];
   }

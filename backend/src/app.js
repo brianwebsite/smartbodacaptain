@@ -1043,6 +1043,30 @@ export function createApp({
   );
 
 
+  // The road between two points, to draw on the map. Remembered for a while so the same leg is not looked up twice.
+  const routeCache = new Map();
+  const routeByUser = new RateLimiter(90, 60 * 1000);
+  router.add(
+    'POST',
+    '/api/route',
+    async ({ user, body }) => {
+      obj(body);
+      const from = point(body.from, 'from');
+      const to = point(body.to, 'to');
+      if (!routeByUser.allow(user.id, Date.parse(now()))) throw new HttpError(429, 'Too many map requests. Please wait a moment.', 'rate_limited');
+      if (haversineKm(from, to) > 80) throw bad('Those places are too far apart');
+      const key = [from.lat, from.lng, to.lat, to.lng].map((n) => n.toFixed(4)).join(',');
+      const hit = routeCache.get(key);
+      if (hit && Date.parse(now()) - hit.at < 10 * 60 * 1000) return { path: hit.path };
+      const r = await routing.route(from, to);
+      const path = r.path ?? null;
+      routeCache.set(key, { path, at: Date.parse(now()) });
+      if (routeCache.size > 500) routeCache.delete(routeCache.keys().next().value);
+      return { path, distanceKm: round1(r.distanceKm), source: r.source };
+    },
+    { roles: ['passenger', 'captain'] },
+  );
+
   router.add(
     'POST',
     '/api/fare/estimate',
@@ -1067,6 +1091,7 @@ export function createApp({
         source: route.source,
         kind,
         nightPercent: priceFor(route, 'boda', kind).nightPercent,
+        path: route.path ?? null, // the road to draw on the map, when we have one
         paymentMethods: ['cash', 'wallet'],
         wallet: { available: wallet.available(db, user.id) },
       };

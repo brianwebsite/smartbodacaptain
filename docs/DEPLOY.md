@@ -40,6 +40,8 @@ The whole database is one file: `/srv/smartboda-data/smartboda.db`. Copy it dail
 ## Without a Google key
 The server still works but shows fares from straight-line distance and labels them "approximate". Add `GOOGLE_MAPS_API_KEY` (Routes API enabled) for real road distances.
 
+**Roads on the map:** with no Google key the server uses OSRM, a free road-routing service (`router.project-osrm.org`), for real road distances, times and the line drawn on the map. Its public server is meant for light use; for a busy service set `OSRM_URL` to your own OSRM server, or add the Google key. Set `OSRM=off` to go back to straight-line estimates.
+
 ## Free test server on Render (testing only)
 Render's free plan has no permanent disk: data is wiped when the service restarts or sleeps. Use it only to test sign-in and trips, never for real captains.
 

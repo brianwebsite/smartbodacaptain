@@ -20,6 +20,11 @@ class _HomeScreenState extends State<HomeScreen> {
   Trip? _lastTrip;
   final Set<String> _doneShown = {};
   ApiClient get _api => widget.session.api;
+  late final RouteFinder _roads = RouteFinder(_api);
+
+  void _redraw() {
+    if (mounted) setState(() {});
+  }
   AppUser get _user => widget.session.user!;
 
   final MapController _map = MapController();
@@ -256,6 +261,17 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// The road to the pickup, then to the drop-off.
+  List<Polyline> _lines() {
+    final t = _trip;
+    final here = _here;
+    if (t == null || here == null) return const [];
+    final pickup = LatLng(t.pickup.lat, t.pickup.lng);
+    final dropoff = LatLng(t.dropoff.lat, t.dropoff.lng);
+    if (t.status == 'in_progress') return [RouteFinder.draw(_roads.line(here, dropoff, _redraw))];
+    return [RouteFinder.draw(_roads.line(here, pickup, _redraw))];
+  }
+
   List<Marker> _markers() {
     final out = <Marker>[];
     if (_here != null) out.add(vehicleMarker(_here!, _user.vehicleType, big: true));
@@ -318,6 +334,7 @@ class _HomeScreenState extends State<HomeScreen> {
             center: _here ?? kampalaCentre,
             userAgentPackageName: 'ug.smartboda.captain',
             markers: _markers(),
+            lines: _lines(),
           ),
         ),
         Material(
