@@ -88,6 +88,8 @@ class _ReceiptSheetState extends State<_ReceiptSheet> {
           if (r['commission'] != null) ...[
             const Divider(height: 24),
             _row('Smart Boda commission', ugx(r['commission'] as num)),
+            if (r['overrunCommission'] != null)
+              _row('Extra commission (driven past the drop-off)', ugx(r['overrunCommission'] as num)),
             _row('Rider earnings (before costs)', ugx(r['riderEarnings'] as num)),
             const SizedBox(height: 4),
             Text(r['earningsNote'] as String, style: t.bodySmall),

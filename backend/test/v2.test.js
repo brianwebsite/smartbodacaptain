@@ -11,6 +11,7 @@ import { createApp } from '../src/app.js';
 import { estimateRouting } from '../src/routing.js';
 import { hashPassword } from '../src/auth.js';
 import { isNight } from '../src/night.js';
+import * as wallet from '../src/wallet.js';
 
 const PICKUP = { lat: 0.355, lng: 32.615 };
 const DROPOFF = { lat: 0.39, lng: 32.64 };
@@ -544,4 +545,79 @@ test('FCM client signs with the service account and sends a notification', async
   const jwt = String(calls[0].opts.body.get('assertion')).split('.');
   assert.equal(jwt.length, 3);
   assert.equal(JSON.parse(Buffer.from(jwt[1], 'base64url')).scope, 'https://www.googleapis.com/auth/firebase.messaging');
+});
+
+test('a captain who drives on past the destination without finishing is charged for the extra distance', async () => {
+  const h = await harness();
+  const cap = await h.captain('boda', NEAR);
+  const p = await h.passenger();
+  const t = await h.request(p);
+  const id = t.body.trip.id;
+  await h.accept(cap, id);
+  assert.equal((await h.step(cap, id, 'arrived')).status, 200);
+  assert.equal((await h.step(cap, id, 'start')).status, 200);
+  const trip = h.db.prepare('SELECT * FROM trips WHERE id = ?').get(id);
+  const at = (lat) => h.call('POST', '/api/captain/location', { lat, lng: 32.64 }, cap.token);
+  const status = () => h.db.prepare('SELECT status FROM trips WHERE id = ?').get(id).status;
+
+  await at(0.3905); // reaches the drop-off area, but does not finish the trip
+  assert.equal(status(), 'in_progress');
+  await at(0.3941); // 400 m past
+  await at(0.3985);
+  assert.equal(status(), 'in_progress'); // not far enough yet
+  assert.ok(h.db.prepare('SELECT overrun_commission AS c FROM trips WHERE id = ?').get(id).c > 0);
+  await at(0.4030);
+  await at(0.4070); // more than 1.5 km of extra distance
+  assert.equal(status(), 'completed');
+  const done = h.db.prepare('SELECT * FROM trips WHERE id = ?').get(id);
+  assert.ok(done.overrun_commission >= 100);
+  assert.equal(wallet.creditFree(h.db, cap.id), 100000 - trip.commission - done.overrun_commission);
+  assert.equal(wallet.creditReserved(h.db, cap.id), 0);
+  // The captain sees the extra charge on his receipt, the passenger does not.
+  const cr = (await h.call('GET', `/api/trips/${id}/receipt`, undefined, cap.token)).body.receipt;
+  assert.equal(cr.overrunCommission, done.overrun_commission);
+  const pr = (await h.call('GET', `/api/trips/${id}/receipt`, undefined, p.token)).body.receipt;
+  assert.equal(pr.overrunCommission, undefined);
+  await h.close();
+});
+
+test('a finished trip with no captain activity for hours is closed by the system and the commission is charged', async () => {
+  const h = await harness();
+  const cap = await h.captain('boda', NEAR);
+  const p = await h.passenger();
+  const t = await h.request(p);
+  const id = t.body.trip.id;
+  await h.accept(cap, id);
+  await h.step(cap, id, 'arrived');
+  await h.step(cap, id, 'start');
+  const trip = h.db.prepare('SELECT * FROM trips WHERE id = ?').get(id);
+  h.clock.ms += 5 * 3600 * 1000; // phone switched off for five hours
+  await h.call('GET', '/api/captain/offers', undefined, cap.token);
+  assert.equal(h.db.prepare('SELECT status FROM trips WHERE id = ?').get(id).status, 'completed');
+  assert.equal(wallet.creditFree(h.db, cap.id), 100000 - trip.commission);
+  await h.close();
+});
+
+test('push test: tells the person exactly what is missing', async () => {
+  const sent = [];
+  const push = { send: async (token, m) => { sent.push({ token, ...m }); return 'sent'; } };
+  const off = await harness();
+  const a = await off.passenger();
+  const none = (await off.call('POST', '/api/me/push-test', {}, a.token)).body;
+  assert.equal(none.ok, false);
+  assert.match(none.message, /FIREBASE_SERVICE_ACCOUNT/);
+  await off.close();
+
+  const h = await harness({ push });
+  const p = await h.passenger();
+  assert.match((await h.call('POST', '/api/me/push-test', {}, p.token)).body.message, /not registered/);
+  await h.call('PUT', '/api/me/push-token', { token: 'passenger-phone-token-0000001' }, p.token);
+  const ok = (await h.call('POST', '/api/me/push-test', {}, p.token)).body;
+  assert.equal(ok.ok, true);
+  assert.equal(sent.length, 1);
+  const st = (await h.call('GET', '/api/admin/push-status', undefined, h.adminToken)).body;
+  assert.equal(st.on, true);
+  assert.equal(st.phones.passengers, 1);
+  assert.equal((await h.call('GET', '/api/admin/push-status', undefined, p.token)).status, 403);
+  await h.close();
 });

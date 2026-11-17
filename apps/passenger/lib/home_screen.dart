@@ -1323,16 +1323,11 @@ class _RatingSheetState extends State<_RatingSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(widget.trip.isDelivery ? 'Delivery done' : 'You have arrived',
+          Text(widget.trip.isDelivery ? 'Delivery complete' : 'Trip complete',
               textAlign: TextAlign.center, style: Theme.of(context).textTheme.headlineSmall),
-          const SizedBox(height: 6),
-          Text(
-              widget.trip.paymentMethod == 'wallet'
-                  ? '${ugx(widget.trip.fare)} was paid from your wallet.'
-                  : 'Please pay ${ugx(widget.trip.fare)} in cash.',
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 14),
+          const SizedBox(height: 10),
+          AmountSummary(label: widget.trip.isDelivery ? 'Delivery amount' : 'Trip amount', amount: ugx(widget.trip.fare)),
+          const SizedBox(height: 18),
           Text(name == null ? 'How was your ride?' : 'How was your ride with $name?', textAlign: TextAlign.center),
           const SizedBox(height: 8),
           Row(

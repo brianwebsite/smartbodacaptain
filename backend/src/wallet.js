@@ -104,6 +104,22 @@ export function chargeCommission(db, { riderId, tripId, commission, at }) {
   });
 }
 
+/**
+ * A captain who drove on past the destination without finishing the trip: the meter kept running,
+ * so the commission on the extra distance is taken from his account. It may take his credit below zero.
+ */
+export function chargeOverrun(db, { riderId, tripId, amount, digital, at }) {
+  if (!(amount > 0)) return false;
+  return ledger.post(db, {
+    ref: `overrun:${tripId}`, kind: 'overrun_commission', tripId, at,
+    memo: 'Commission on distance driven past the destination',
+    entries: [
+      { account: digital ? acct.payable(riderId) : acct.credit(riderId), amount },
+      { account: 'company_commission', amount: -amount },
+    ],
+  });
+}
+
 /** Digital trip completed: passenger pays, company keeps commission, rider is owed the rest. */
 export function settleDigitalTrip(db, { passengerId, riderId, tripId, fare, commission, earnings, at }) {
   return ledger.post(db, {

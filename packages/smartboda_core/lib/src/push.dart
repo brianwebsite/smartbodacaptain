@@ -17,9 +17,16 @@ class PushService {
   static String? token;
   static bool _listening = false;
 
+  /// What happened last, in words the person can act on: 'on', 'blocked', or the problem.
+  static String status = 'Not checked yet';
+
+  static bool get isOn => status == 'on';
+
   /// Asks permission, gets this phone's token, and tells the server. Safe to call again.
-  static Future<void> start(ApiClient api) async {
-    if (!configured) return;
+  static Future<String> start(ApiClient api) async {
+    if (!configured) {
+      return status = 'This copy of the app was built without notifications. Install the newest version.';
+    }
     try {
       if (Firebase.apps.isEmpty) {
         await Firebase.initializeApp(
@@ -27,10 +34,15 @@ class PushService {
         );
       }
       final messaging = FirebaseMessaging.instance;
-      await messaging.requestPermission();
+      final settings = await messaging.requestPermission().timeout(const Duration(seconds: 90));
+      final allowed = settings.authorizationStatus == AuthorizationStatus.authorized ||
+          settings.authorizationStatus == AuthorizationStatus.provisional;
       token = await messaging.getToken();
       final t = token;
       if (t != null) await api.put('/api/me/push-token', {'token': t});
+      status = t == null
+          ? 'This phone did not give us a notification address. Check the internet and try again.'
+          : (allowed ? 'on' : 'blocked');
       if (!_listening) {
         _listening = true;
         messaging.onTokenRefresh.listen((fresh) {
@@ -38,8 +50,11 @@ class PushService {
           api.put('/api/me/push-token', {'token': fresh}).catchError((_) => <String, dynamic>{});
         });
       }
-    } catch (_) {
-      // No push is better than a broken app.
+    } catch (e) {
+      // No push is better than a broken app, but say what went wrong so it can be fixed.
+      final text = e.toString();
+      status = 'Could not turn on notifications: ${text.length > 160 ? text.substring(0, 160) : text}';
     }
+    return status;
   }
 }

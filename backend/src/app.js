@@ -82,6 +82,8 @@ export function createApp({
     history: JSON.parse(row.history),
   });
 
+  const pushState = { sent: 0, failed: 0, lastError: null, lastErrorAt: null, lastSentAt: null };
+
   /** Sends a push notification to every phone the person is signed in on. Never blocks or fails a request. */
   function notify(userId, { title, body, data = {} }, onlyIf = null) {
     if (!push || !userId) return;
@@ -93,8 +95,15 @@ export function createApp({
           try {
             const r = await push.send(token, { title, body, data });
             if (r === 'unregistered') db.prepare('DELETE FROM push_tokens WHERE token = ?').run(token);
+            else {
+              pushState.sent += 1;
+              pushState.lastSentAt = now();
+            }
           } catch (err) {
             console.error(`Push failed: ${err.message}`);
+            pushState.failed += 1;
+            pushState.lastError = err.message;
+            pushState.lastErrorAt = now();
           }
         }
       } catch (err) {
@@ -243,7 +252,28 @@ export function createApp({
 
   // ---------- trips that nobody accepted ----------
 
+  /** A trip still "in progress" long after it should have ended (phone off, app closed): finish it so the commission is charged. */
+  function finishAbandonedTrips() {
+    const rows = db.prepare('SELECT * FROM trips WHERE status = ?').all(S.IN_PROGRESS);
+    for (const row of rows) {
+      const hist = JSON.parse(row.history);
+      const startedAt = [...hist].reverse().find((h) => h.status === S.IN_PROGRESS)?.at;
+      if (!startedAt) continue;
+      const allowedMin = Math.max(90, row.duration_min * 3 + 30);
+      if (Date.parse(now()) - Date.parse(startedAt) < allowedMin * 60 * 1000) continue;
+      try {
+        transaction(db, () => {
+          const fresh = getTripRow(row.id);
+          if (fresh?.status === S.IN_PROGRESS) completeTrip(fresh, 'system', null);
+        });
+      } catch (err) {
+        if (!(err instanceof HttpError) && !(err instanceof TripError)) throw err;
+      }
+    }
+  }
+
   function expireStaleTrips() {
+    finishAbandonedTrips();
     const cfg = getDispatchConfig(db);
     const cutoff = new Date(Date.parse(now()) - cfg.offerSeconds * 1000).toISOString();
     const stale = db
@@ -688,6 +718,49 @@ export function createApp({
       return { ok: true, pushOn: Boolean(push) };
     },
     { roles: ['passenger', 'captain'] },
+  );
+
+  // "Send me a test notification": proves this phone, the Firebase key and the server all work together.
+  router.add(
+    'POST',
+    '/api/me/push-test',
+    async ({ user }) => {
+      if (!push) {
+        return { ok: false, message: 'The server is not set up for notifications yet. Add FIREBASE_SERVICE_ACCOUNT in Render.' };
+      }
+      const tokens = db.prepare('SELECT token FROM push_tokens WHERE user_id = ?').all(user.id);
+      if (!tokens.length) {
+        return { ok: false, message: 'This phone has not registered for notifications. Allow notifications, then try again.' };
+      }
+      let sent = 0;
+      let error = null;
+      for (const { token } of tokens) {
+        try {
+          const r = await push.send(token, { title: 'Smart Boda', body: 'Notifications are working on this phone.', data: { type: 'test' } });
+          if (r === 'unregistered') db.prepare('DELETE FROM push_tokens WHERE token = ?').run(token);
+          else sent += 1;
+        } catch (err) {
+          error = err.message;
+        }
+      }
+      if (sent > 0) return { ok: true, message: 'Sent. If nothing appears on this phone, allow notifications for Smart Boda in the phone settings.' };
+      return { ok: false, message: error ?? 'That phone is no longer registered. Open the app again and allow notifications.' };
+    },
+    { roles: ['passenger', 'captain'] },
+  );
+
+  router.add(
+    'GET',
+    '/api/admin/push-status',
+    () => ({
+      on: Boolean(push),
+      phones: {
+        captains: db.prepare(`SELECT COUNT(*) AS v FROM push_tokens t JOIN users u ON u.id = t.user_id WHERE u.role = 'captain'`).get().v,
+        passengers: db.prepare(`SELECT COUNT(*) AS v FROM push_tokens t JOIN users u ON u.id = t.user_id WHERE u.role = 'passenger'`).get().v,
+      },
+      ...pushState,
+    }),
+    { roles: ['admin'] },
   );
 
   // A second number Smart Boda can reach the person on, for example a relative.
@@ -1295,7 +1368,28 @@ export function createApp({
   const ARRIVE_KM = 0.06;
   const LEAVE_KM = 0.15;
   const DROPOFF_KM = 0.08;
-  function autoAdvance(row, p) {
+  // Past the destination: once the captain has reached the drop-off, every kilometre driven beyond it
+  // keeps earning commission for Smart Boda. After this much extra distance the system ends the trip.
+  const DROPOFF_REACHED_KM = 0.15;
+  const OVERRUN_LIMIT_KM = 1.5;
+  const MAX_STEP_KM = 3; // ignore a GPS jump bigger than this between two reports
+  function trackOverrun(fresh, p, prev) {
+    const dKm = haversineKm(p, { lat: fresh.dropoff_lat, lng: fresh.dropoff_lng });
+    if (dKm <= DROPOFF_REACHED_KM) {
+      if (!fresh.dropoff_reached_at) db.prepare('UPDATE trips SET dropoff_reached_at = ? WHERE id = ?').run(now(), fresh.id);
+      return fresh;
+    }
+    if (!fresh.dropoff_reached_at || !prev) return fresh;
+    const step = haversineKm(prev, p);
+    if (!(step > 0) || step > MAX_STEP_KM) return fresh;
+    const km = fresh.overrun_km + step;
+    const rate = fresh.commission_rate ?? getFareConfig(db).commissionRate;
+    const perKm = fresh.fare / Math.max(fresh.distance_km, 1);
+    const commission = Math.round((km * perKm * rate) / 100) * 100;
+    db.prepare('UPDATE trips SET overrun_km = ?, overrun_commission = ? WHERE id = ?').run(km, commission, fresh.id);
+    return getTripRow(fresh.id);
+  }
+  function autoAdvance(row, p, prev = null) {
     const at = now();
     const lastAt = (status) => [...JSON.parse(row.history)].reverse().find((h) => h.status === status)?.at;
     try {
@@ -1313,8 +1407,11 @@ export function createApp({
           }
         } else if (fresh.status === S.IN_PROGRESS) {
           const since = Date.parse(at) - Date.parse(lastAt(S.IN_PROGRESS));
+          const tracked = trackOverrun(fresh, p, prev);
           if (since >= 120_000 && haversineKm(p, trip.dropoff) <= DROPOFF_KM) {
-            completeTrip(fresh, 'system', null);
+            completeTrip(tracked, 'system', null);
+          } else if (tracked.overrun_km >= OVERRUN_LIMIT_KM) {
+            completeTrip(tracked, 'system', null); // drove on and never finished: end it and charge
           }
         }
       });
@@ -1349,6 +1446,7 @@ export function createApp({
       receipt.commission = row.commission;
       receipt.commissionRate = row.commission_rate;
       receipt.riderEarnings = row.captain_earnings;
+      if (row.overrun_commission > 0) receipt.overrunCommission = row.overrun_commission;
       receipt.earningsNote = digital
         ? 'Paid through the app: this amount is payable to the rider.'
         : 'Collected in cash by the rider. It does not pass through Smart Boda.';
@@ -1401,6 +1499,7 @@ export function createApp({
 
   function completeTrip(row, by, actorId) {
     const at = now();
+    row = getTripRow(row.id) ?? row; // the latest figures, including any distance driven past the drop-off
     saveTransition(row, transitionTrip(rowToTrip(row), S.COMPLETED, { by, actorId, at }), at);
     if (row.payment_method === 'wallet') {
       wallet.settleDigitalTrip(db, {
@@ -1410,6 +1509,11 @@ export function createApp({
     } else if (row.payment_method === 'cash') {
       // The passenger pays the rider in cash; only the commission moves, from reserved credit to revenue.
       wallet.chargeCommission(db, { riderId: row.captain_id, tripId: row.id, commission: row.commission, at });
+    }
+    if (row.overrun_commission > 0) {
+      wallet.chargeOverrun(db, {
+        riderId: row.captain_id, tripId: row.id, amount: row.overrun_commission, digital: row.payment_method === 'wallet', at,
+      });
     }
     setImmediate(() => void emailReceipts(row.id)); // after the trip is saved
   }
@@ -1427,11 +1531,15 @@ export function createApp({
     ({ user, body }) => {
       requireActiveCaptain(user);
       const p = point(obj(body), 'location');
+      const before = getProfile(user.id);
+      const prev = before?.lat != null && before.location_at && Date.parse(now()) - Date.parse(before.location_at) < 5 * 60 * 1000
+        ? { lat: before.lat, lng: before.lng }
+        : null;
       db.prepare('UPDATE captain_profiles SET lat = ?, lng = ?, location_at = ? WHERE user_id = ?').run(
         p.lat, p.lng, now(), user.id,
       );
       const active = activeTripForCaptain(user.id);
-      if (active) autoAdvance(active, p);
+      if (active) autoAdvance(active, p, prev);
       return { ok: true };
     },
     { roles: ['captain'] },

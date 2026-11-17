@@ -88,7 +88,8 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _checked = false;
 
   bool get _isCaptain => widget.session.role == 'captain';
-  bool get _googleAvailable => !_isCaptain && _googleClientId != null;
+  /// Passengers always see the Google button. The server's details are fetched when needed.
+  bool get _googleAvailable => !_isCaptain;
 
   @override
   void initState() {
@@ -105,10 +106,18 @@ class _AuthScreenState extends State<AuthScreen> {
         }
       });
     });
-    if (!_isCaptain) {
-      widget.session.googleServerClientId().then((id) {
-        if (mounted) setState(() => _googleClientId = id);
-      });
+    if (!_isCaptain) _fetchGoogleId();
+  }
+
+  /// The server may be waking up (free hosting sleeps), so try a few times.
+  Future<void> _fetchGoogleId([int attempt = 0]) async {
+    final id = await widget.session.googleServerClientId();
+    if (!mounted) return;
+    if (id != null) {
+      setState(() => _googleClientId = id);
+    } else if (attempt < 4) {
+      await Future<void>.delayed(const Duration(seconds: 5));
+      if (mounted && _googleClientId == null) await _fetchGoogleId(attempt + 1);
     }
   }
 
@@ -330,12 +339,21 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   Future<void> _google() async {
-    final clientId = _googleClientId;
-    if (clientId == null) return;
     setState(() {
       _busy = true;
       _error = null;
     });
+    final clientId = _googleClientId ?? await widget.session.googleServerClientId();
+    if (clientId == null) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = 'Google sign-in is not ready right now. Check your internet and try again, or use your email or phone.';
+        });
+      }
+      return;
+    }
+    _googleClientId = clientId;
     try {
       final gs = GoogleSignIn(scopes: const ['email'], serverClientId: clientId);
       final account = await gs.signIn();

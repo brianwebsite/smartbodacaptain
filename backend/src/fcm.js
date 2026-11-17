@@ -63,18 +63,19 @@ export function fcmFromEnv(json, { fetchImpl = fetch, nowSec = () => Math.floor(
             token,
             notification: { title, body },
             data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
-            android: { priority: 'HIGH', notification: { sound: 'default' } },
+            android: { priority: 'HIGH', ttl: '600s', notification: { sound: 'default' } },
           },
         }),
         signal: AbortSignal.timeout(10000),
       });
       if (res.ok) return 'sent';
-      if (res.status === 404 || res.status === 400) {
-        const d = await res.json().catch(() => ({}));
-        const code = JSON.stringify(d);
-        if (code.includes('UNREGISTERED') || code.includes('INVALID_ARGUMENT')) return 'unregistered';
+      const d = await res.json().catch(() => ({}));
+      const code = JSON.stringify(d);
+      // Only a dead phone token is dropped. A bad message or a setup problem must not delete good tokens.
+      if (res.status === 404 || (res.status === 400 && /registration token|UNREGISTERED/i.test(code))) {
+        if (/UNREGISTERED|registration token/i.test(code)) return 'unregistered';
       }
-      throw new Error(`FCM answered ${res.status}`);
+      throw new Error(`FCM answered ${res.status}${d?.error?.message ? `: ${String(d.error.message).slice(0, 240)}` : ''}`);
     },
   };
 }

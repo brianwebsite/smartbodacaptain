@@ -5,6 +5,7 @@ import 'api.dart';
 import 'format.dart';
 import 'phone_actions.dart';
 import 'profile_photo.dart';
+import 'push.dart';
 import 'session.dart';
 import 'theme.dart';
 import 'wallet_screen.dart';
@@ -141,6 +142,8 @@ class AccountMenu extends StatelessWidget {
             }
           }),
           tile(Icons.info_outline, 'About us', () => push(AboutScreen(api: session.api))),
+          tile(Icons.notifications_active_outlined, 'Notifications', () => _notificationsDialog(context),
+              subtitle: PushService.isOn ? 'On' : 'Tap to allow and test'),
           tile(Icons.phone_forwarded_outlined, 'Backup contact number', () => _backupDialog(context),
               subtitle: u.backupPhone ?? 'Add a second number we can reach you on'),
           tile(Icons.support_agent, 'Contact us', () => push(ContactScreen(api: session.api))),
@@ -151,6 +154,63 @@ class AccountMenu extends StatelessWidget {
             label: const Text('Sign out'),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Allow notifications, and send a test to this very phone to prove the whole chain works.
+  Future<void> _notificationsDialog(BuildContext context) async {
+    String message = PushService.isOn ? 'Notifications are on for this phone.' : 'Checking...';
+    var busy = false;
+    var started = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) {
+          Future<void> allow() async {
+            setState(() => busy = true);
+            final s = await PushService.start(session.api);
+            if (!ctx.mounted) return;
+            setState(() {
+              busy = false;
+              message = s == 'on'
+                  ? 'Notifications are on for this phone.'
+                  : s == 'blocked'
+                      ? 'Notifications are blocked. Open your phone Settings, then Apps, Smart Boda, Notifications, and turn them on.'
+                      : s;
+            });
+          }
+
+          Future<void> test() async {
+            setState(() => busy = true);
+            try {
+              final r = await session.api.post('/api/me/push-test', {});
+              if (ctx.mounted) setState(() => message = (r['message'] as String?) ?? 'Done.');
+            } on ApiException catch (e) {
+              if (ctx.mounted) setState(() => message = e.message);
+            }
+            if (ctx.mounted) setState(() => busy = false);
+          }
+
+          if (!started) {
+            started = true;
+            WidgetsBinding.instance.addPostFrameCallback((_) => allow());
+          }
+          return AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(message),
+                if (busy) const Padding(padding: EdgeInsets.only(top: 12), child: LinearProgressIndicator()),
+                const SizedBox(height: 14),
+                FilledButton(onPressed: busy ? null : allow, child: const Text('Allow notifications')),
+                const SizedBox(height: 8),
+                OutlinedButton(onPressed: busy ? null : test, child: const Text('Send me a test notification')),
+              ],
+            ),
+          );
+        },
       ),
     );
   }

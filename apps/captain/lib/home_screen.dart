@@ -378,7 +378,47 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// While driving to the drop-off nothing else is shown. The slide to finish appears when close.
+  Widget _drivingPanel(BuildContext context, Trip t) {
+    final here = _here;
+    final km = here == null ? null : kmBetween(here, LatLng(t.dropoff.lat, t.dropoff.lng));
+    final near = km == null || km <= 0.5; // without a location fix we cannot tell, so do not hide it
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 350),
+      child: near
+          ? Column(
+              key: const ValueKey('finish'),
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  ),
+                SlideToConfirm(
+                  key: ValueKey('${t.id}-complete'),
+                  label: t.isDelivery ? 'Delivered' : 'Complete trip',
+                  color: Colors.green.shade700,
+                  enabled: !_busy,
+                  onConfirmed: () => _complete(t),
+                ),
+              ],
+            )
+          : Padding(
+              key: const ValueKey('driving'),
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Text(
+                '${km!.toStringAsFixed(1)} km to the drop-off',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+            ),
+    );
+  }
+
   Widget _tripPanel(BuildContext context, Trip t) {
+    if (t.status == 'in_progress') return _drivingPanel(context, t);
     final String label;
     final String? next;
     switch (t.status) {
@@ -618,8 +658,6 @@ class _TripDoneSheetState extends State<_TripDoneSheet> {
   @override
   Widget build(BuildContext context) {
     final t = widget.trip;
-    final wallet = t.paymentMethod == 'wallet';
-    final mine = ugx(t.captainEarnings ?? t.fare);
     return Padding(
       padding: EdgeInsets.fromLTRB(24, 24, 24, 24 + MediaQuery.of(context).viewInsets.bottom),
       child: Column(
@@ -630,15 +668,9 @@ class _TripDoneSheetState extends State<_TripDoneSheet> {
           const SizedBox(height: 8),
           Text(t.isDelivery ? 'Delivery complete' : 'Trip complete',
               textAlign: TextAlign.center, style: Theme.of(context).textTheme.headlineSmall),
-          const SizedBox(height: 8),
-          Text(
-            wallet
-                ? 'Already paid from the passenger wallet. $mine was added to your wallet. Do not collect cash.'
-                : 'Collect ${ugx(t.fare)} cash from ${t.passenger?.name ?? 'the passenger'}.\nYou keep $mine after the Smart Boda fee.',
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 10),
+          AmountSummary(label: t.isDelivery ? 'Delivery amount' : 'Trip amount', amount: ugx(t.fare)),
+          const SizedBox(height: 18),
           Text('Rate ${t.passenger?.name ?? 'the passenger'}', textAlign: TextAlign.center),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,

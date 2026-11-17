@@ -201,8 +201,16 @@ async function overview(body) {
         } catch (ex) { bout.textContent = ex.message; }
         e.target.disabled = false;
       } }, 'Back up now and check'), ' ', bout) : null) : null;
+  const pu = await api('/api/admin/push-status').catch(() => null);
+  const pushBox = pu ? h('div', { class: 'panel', style: 'margin-bottom:12px;padding:12px' },
+    h('strong', {}, pu.on ? 'Push notifications are ON' : 'Push notifications are OFF'),
+    h('div', { class: 'muted' }, pu.on
+      ? 'Phones registered: ' + pu.phones.captains + ' captain, ' + pu.phones.passengers + ' passenger. Sent: ' + pu.sent + ' · Failed: ' + pu.failed + (pu.lastSentAt ? ' · Last sent ' + when(pu.lastSentAt) : '')
+      : 'Set FIREBASE_SERVICE_ACCOUNT in Render (the whole key file text) and redeploy.'),
+    pu.lastError ? h('div', { style: 'color:#b3261e' }, 'Last problem (' + when(pu.lastErrorAt) + '): ' + pu.lastError) : null,
+    h('div', { class: 'muted' }, 'Each person can press Account > Notifications in their app to send themselves a test.')) : null;
   body.replaceChildren(
-    h('h2', {}, 'Overview'), payBox, backupBox,
+    h('h2', {}, 'Overview'), payBox, backupBox, pushBox,
     h('div', { class: 'cards' },
       card(s.captainsPending, 'Captains waiting for approval'),
       card(s.captainsOnline, 'Captains online now'),

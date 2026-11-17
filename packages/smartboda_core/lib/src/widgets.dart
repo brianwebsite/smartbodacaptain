@@ -226,3 +226,27 @@ class StandingBanner extends StatelessWidget {
     );
   }
 }
+
+/// "Trip amount" over a big bold figure: all the finished-trip card needs to say.
+class AmountSummary extends StatelessWidget {
+  const AmountSummary({super.key, required this.label, required this.amount});
+
+  final String label;
+  final String amount;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(label, style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 4),
+        Text(
+          amount,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 40, fontWeight: FontWeight.w900, color: brandPrimary),
+        ),
+      ],
+    );
+  }
+}
