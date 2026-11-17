@@ -1075,6 +1075,62 @@ export function createApp({
     { roles: ['passenger', 'captain', 'admin'] },
   );
 
+  // The passenger may change where they are going until the trip has been started.
+  router.add(
+    'POST',
+    '/api/trips/:id/destination',
+    async ({ user, params, body }) => {
+      obj(body);
+      const dropoff = point(body.dropoff, 'dropoff');
+      const dropoffLabel = text(body.dropoffLabel, 'dropoffLabel', { max: 120, optional: true });
+      const first = getTripRow(params.id);
+      if (!first || first.passenger_id !== user.id) throw new HttpError(404, 'Trip not found');
+      const q = await quote({ lat: first.pickup_lat, lng: first.pickup_lng }, dropoff, first.vehicle_type ?? 'boda', first.kind);
+      return transaction(db, () => {
+        const row = getTripRow(params.id);
+        if (!row || row.passenger_id !== user.id) throw new HttpError(404, 'Trip not found');
+        if (![S.REQUESTED, S.ACCEPTED, S.ARRIVED].includes(row.status)) {
+          throw new HttpError(409, 'The trip has started, so the destination can no longer be changed.', 'trip_started');
+        }
+        if (row.destination_changes >= 3) {
+          throw new HttpError(409, 'You have changed the destination 3 times already. Cancel and request again if you need to.', 'too_many_changes');
+        }
+        if (row.payment_method === 'wallet' && wallet.available(db, user.id) < q.fare) {
+          throw new HttpError(402, `Your wallet has ${fmtUgx(wallet.available(db, user.id))}, but the new trip costs ${fmtUgx(q.fare)}. Add money or pick a closer place.`, 'insufficient_wallet');
+        }
+        if (row.captain_id && row.payment_method === 'cash' && q.commission > row.commission) {
+          const free = wallet.creditFree(db, row.captain_id);
+          if (free < q.commission - row.commission) {
+            throw new HttpError(409, 'Your captain cannot take a trip that long right now. Choose a closer place, or cancel and request again.', 'captain_credit');
+          }
+        }
+        db.prepare(
+          `UPDATE trips SET dropoff_lat = ?, dropoff_lng = ?, dropoff_label = ?, distance_km = ?, duration_min = ?,
+             route_source = ?, fare = ?, commission = ?, captain_earnings = ?, night_percent = ?,
+             destination_changes = destination_changes + 1, updated_at = ? WHERE id = ? AND status = ?`,
+        ).run(
+          dropoff.lat, dropoff.lng, dropoffLabel, q.distanceKm, q.durationMin, q.source, q.fare, q.commission,
+          q.captainEarnings, q.nightPercent, now(), row.id, row.status,
+        );
+        if (row.captain_id && row.payment_method === 'cash') {
+          wallet.adjustReservation(db, {
+            riderId: row.captain_id, tripId: row.id, from: row.commission, to: q.commission,
+            seq: row.destination_changes + 1, at: now(),
+          });
+        }
+        if (row.captain_id) {
+          notify(row.captain_id, {
+            title: 'Destination changed',
+            body: `${dropoffLabel ?? 'New drop-off'} · ${fmtUgx(q.fare)}`,
+            data: { type: 'trip', tripId: row.id, status: row.status },
+          }, () => true);
+        }
+        return { trip: tripView(getTripRow(row.id), 'passenger') };
+      });
+    },
+    { roles: ['passenger'] },
+  );
+
   router.add(
     'POST',
     '/api/trips/:id/cancel',

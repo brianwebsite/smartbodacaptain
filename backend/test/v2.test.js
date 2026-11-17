@@ -746,3 +746,40 @@ test('ratings and comments show up for the admin; the FAQ answers by account typ
   assert.ok(pf.some((e) => /forgot my password/i.test(e.q)) && cf.some((e) => /forgot my password/i.test(e.q)));
   await h.close();
 });
+
+test('the passenger can change the destination until the trip starts; the fare and reserved commission follow', async () => {
+  const h = await harness();
+  const p = await h.passenger();
+  const c = await h.captain();
+  const far = { lat: 0.45, lng: 32.7 };
+  const t = (await h.request(p)).body.trip;
+  const oldFare = t.fare;
+  const reservedOf = () => wallet.creditReserved(h.db, c.id);
+
+  // Before anyone accepts: fare changes, nothing is reserved.
+  let r = await h.call('POST', `/api/trips/${t.id}/destination`, { dropoff: far, dropoffLabel: 'Far place' }, p.token);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok(r.body.trip.fare > oldFare);
+  assert.equal(r.body.trip.dropoff.label, 'Far place');
+
+  // After accepting: the captain's reserved commission matches the new commission, and moves back with a closer place.
+  assert.equal((await h.accept(c, t.id)).status, 200);
+  const dbCommission = () => h.db.prepare('SELECT commission FROM trips WHERE id = ?').get(t.id).commission;
+  assert.equal(reservedOf(), dbCommission());
+  r = await h.call('POST', `/api/trips/${t.id}/destination`, { dropoff: DROPOFF, dropoffLabel: 'Back' }, p.token);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(reservedOf(), dbCommission());
+  assert.equal(r.body.trip.fare, oldFare);
+
+  // The captain cannot, and neither can a stranger; after the start it is refused.
+  assert.equal((await h.call('POST', `/api/trips/${t.id}/destination`, { dropoff: far }, c.token)).status, 403);
+  const other = await h.passenger();
+  assert.equal((await h.call('POST', `/api/trips/${t.id}/destination`, { dropoff: far }, other.token)).status, 404);
+  assert.equal((await h.step(c, t.id, 'arrived')).status, 200);
+  assert.equal((await h.step(c, t.id, 'start')).status, 200);
+  r = await h.call('POST', `/api/trips/${t.id}/destination`, { dropoff: far }, p.token);
+  assert.equal(r.status, 409);
+  assert.equal(r.body.code ?? r.body.error?.code, 'trip_started');
+  assert.equal((await h.step(c, t.id, 'complete')).status, 200);
+  await h.close();
+});

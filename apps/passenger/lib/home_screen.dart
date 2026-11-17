@@ -522,6 +522,35 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
   }
 
+  /// Until the trip is started the passenger may pick a different place to go to.
+  Future<void> _changeDestination(Trip t) async {
+    final p = await Navigator.of(context).push<Place>(
+      MaterialPageRoute(
+        builder: (_) => SearchScreen(
+          api: _api,
+          title: t.isDelivery ? 'Where should we deliver instead?' : 'Where are you going instead?',
+          near: LatLng(t.pickup.lat, t.pickup.lng),
+          here: null,
+        ),
+      ),
+    );
+    if (p == null || !mounted) return;
+    setState(() => _error = null);
+    try {
+      final r = await _api.post('/api/trips/${t.id}/destination', {
+        'dropoff': {'lat': p.lat, 'lng': p.lng},
+        'dropoffLabel': p.label,
+      });
+      final updated = Trip.fromJson(r['trip'] as Map<String, dynamic>);
+      if (!mounted) return;
+      setState(() => _trip = updated);
+      _fit([LatLng(updated.pickup.lat, updated.pickup.lng), LatLng(updated.dropoff.lat, updated.dropoff.lng)]);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Destination changed. The fare is now ${ugx(updated.fare)}.')));
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    }
+  }
+
   Future<void> _cancel(Trip t) async {
     final reason = await askCancelReason(context, captain: false);
     if (reason == null) return;
@@ -1223,6 +1252,15 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           ),
         ],
         const SizedBox(height: 10),
+        Row(
+          children: [
+            const Icon(Icons.location_on, color: Colors.red, size: 20),
+            const SizedBox(width: 6),
+            Expanded(child: Text(t.dropoff.text, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600))),
+            if (t.status == 'requested' || t.status == 'accepted' || t.status == 'arrived')
+              TextButton(onPressed: () => _changeDestination(t), child: const Text('Change')),
+          ],
+        ),
         Text(
           '${ugx(t.fare)} · ${t.paymentMethod == 'wallet' ? 'wallet' : 'cash'} · ${t.distanceKm} km',
           style: th.bodyMedium,

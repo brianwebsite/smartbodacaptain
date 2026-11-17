@@ -78,6 +78,20 @@ export function reserveCommission(db, { riderId, tripId, commission, at }) {
   });
 }
 
+/** The destination changed after the commission was set aside: move the reservation to the new amount. */
+export function adjustReservation(db, { riderId, tripId, from, to, seq, at }) {
+  const delta = to - from;
+  if (delta === 0 || !ledger.findJournal(db, `reserve:${tripId}`)) return false;
+  return ledger.post(db, {
+    ref: `reserve-adjust:${tripId}:${seq}`, kind: 'commission_reserved', tripId, at,
+    memo: 'Destination changed',
+    entries: [
+      { account: acct.credit(riderId), amount: delta },
+      { account: acct.reserved(riderId), amount: -delta },
+    ],
+  });
+}
+
 /** Cash trip cancelled or expired: give the reserved credit back, once. */
 export function releaseCommission(db, { riderId, tripId, commission, at }) {
   if (!ledger.findJournal(db, `reserve:${tripId}`)) return false;

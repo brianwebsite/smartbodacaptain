@@ -122,30 +122,34 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _toggleOnline(bool want) async {
+    // The switch moves at once; it goes back if going online did not work.
+    final before = _online;
     setState(() {
       _busy = true;
       _error = null;
+      _online = want;
+      if (!want) _offers = [];
     });
     try {
       if (want) {
-        final me = await currentLatLng();
+        final me = await currentLatLng() ?? _here;
         if (me == null) {
-          throw const ApiException('Turn on location to go online. Customers need to know where you are.');
+          throw ApiException(await locationProblem() ?? 'Turn on location to go online.');
         }
         _here = me;
         await _api.post('/api/captain/presence', {'online': true, 'lat': me.latitude, 'lng': me.longitude});
+        unawaited(_locate());
       } else {
         await _api.post('/api/captain/presence', {'online': false});
       }
-      if (mounted) {
-        setState(() {
-          _online = want;
-          if (!want) _offers = [];
-        });
-      }
       _tick();
     } on ApiException catch (e) {
-      if (mounted) setState(() => _error = e.message);
+      if (mounted) {
+        setState(() {
+          _online = before;
+          _error = e.message;
+        });
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }

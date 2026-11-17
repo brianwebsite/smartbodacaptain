@@ -224,6 +224,7 @@ function migrate(db) {
   addColumn('trips', 'dropoff_reached_at', 'TEXT');
   addColumn('trips', 'overrun_km', 'REAL NOT NULL DEFAULT 0');
   addColumn('trips', 'overrun_commission', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('trips', 'destination_changes', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('trips', 'commission_rate', 'REAL');
   addColumn('trips', 'cancelled_from', 'TEXT');
   addColumn('trips', 'cancel_distance_m', 'INTEGER');
