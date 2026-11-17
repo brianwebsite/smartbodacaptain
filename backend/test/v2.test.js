@@ -60,7 +60,7 @@ async function harness({ start = '2026-11-16T10:00:00Z', mailer = null, push = n
   const request = (p, extra = {}) =>
     call('POST', '/api/trips', { pickup: PICKUP, dropoff: DROPOFF, paymentMethod: 'cash', ...extra }, p.token);
   const accept = (c, id) => call('POST', `/api/trips/${id}/accept`, {}, c.token);
-  const step = (c, id, what) => call('POST', `/api/trips/${id}/${what}`, what === 'start' ? { pin: db.prepare('SELECT pickup_pin FROM trips WHERE id = ?').get(id).pickup_pin } : {}, c.token);
+  const step = (c, id, what) => call('POST', `/api/trips/${id}/${what}`, what === 'start' || what === 'complete' ? { pin: db.prepare('SELECT pickup_pin FROM trips WHERE id = ?').get(id).pickup_pin } : {}, c.token);
   const finish = async (c, id) => {
     for (const w of ['arrived', 'start', 'complete']) assert.equal((await step(c, id, w)).status, 200);
   };
@@ -619,5 +619,57 @@ test('push test: tells the person exactly what is missing', async () => {
   assert.equal(st.on, true);
   assert.equal(st.phones.passengers, 1);
   assert.equal((await h.call('GET', '/api/admin/push-status', undefined, p.token)).status, 403);
+  await h.close();
+});
+
+test('delivery: no code to start, the code confirms the handover at the end', async () => {
+  const h = await harness();
+  const cap = await h.captain();
+  const p = await h.passenger();
+  const t = await h.request(p, { kind: 'delivery', deliveryItem: 'Shoes', receiverName: 'Joan', receiverPhone: '0772 111222' });
+  const id = t.body.trip.id;
+  await h.accept(cap, id);
+  assert.equal((await h.call('POST', `/api/trips/${id}/arrived`, {}, cap.token)).status, 200);
+  // Starting needs no code.
+  assert.equal((await h.call('POST', `/api/trips/${id}/start`, {}, cap.token)).status, 200);
+  // The sender still sees the code on the way, to give to the receiver.
+  const pin = h.db.prepare('SELECT pickup_pin FROM trips WHERE id = ?').get(id).pickup_pin;
+  assert.equal((await h.call('GET', `/api/trips/${id}`, undefined, p.token)).body.trip.pickupPin, pin);
+  assert.equal((await h.call('GET', `/api/trips/${id}`, undefined, cap.token)).body.trip.pickupPin, undefined);
+  // The phone cannot finish a delivery by itself at the drop-off.
+  h.clock.ms += 200_000;
+  await h.call('POST', '/api/captain/location', DROPOFF, cap.token);
+  assert.equal(h.db.prepare('SELECT status FROM trips WHERE id = ?').get(id).status, 'in_progress');
+  // Completing needs the code.
+  assert.equal((await h.call('POST', `/api/trips/${id}/complete`, {}, cap.token)).status, 400);
+  const wrong = String((Number(pin) + 1) % 10000).padStart(4, '0');
+  assert.equal((await h.call('POST', `/api/trips/${id}/complete`, { pin: wrong }, cap.token)).body.code, 'wrong_pin');
+  assert.equal((await h.call('POST', `/api/trips/${id}/complete`, { pin }, cap.token)).status, 200);
+  assert.equal(h.db.prepare('SELECT status FROM trips WHERE id = ?').get(id).status, 'completed');
+  assert.equal((await h.call('GET', `/api/trips/${id}`, undefined, p.token)).body.trip.pickupPin, undefined);
+  await h.close();
+});
+
+test('captains see earnings only for trips paid from the app wallet', async () => {
+  const h = await harness();
+  const cap = await h.captain();
+  const p = await h.passenger();
+  await h.credit(p, 50000);
+  const cash = (await h.request(p, { paymentMethod: 'cash' })).body.trip.id;
+  await h.accept(cap, cash);
+  assert.equal((await h.call('GET', '/api/captain/current', undefined, cap.token)).body.trip.captainEarnings, null);
+  await h.finish(cap, cash);
+  const wal = (await h.request(p, { paymentMethod: 'wallet' })).body.trip.id;
+  await h.accept(cap, wal);
+  assert.ok((await h.call('GET', '/api/captain/current', undefined, cap.token)).body.trip.captainEarnings > 0);
+  await h.finish(cap, wal);
+  const receipt = (id) => h.call('GET', `/api/trips/${id}/receipt`, undefined, cap.token).then((r) => r.body.receipt);
+  assert.equal((await receipt(cash)).riderEarnings, undefined);
+  assert.ok((await receipt(cash)).commission > 0);
+  assert.ok((await receipt(wal)).riderEarnings > 0);
+  const e = (await h.call('GET', '/api/captain/earnings', undefined, cap.token)).body;
+  const walletEarn = h.db.prepare("SELECT captain_earnings AS e FROM trips WHERE id = ?").get(wal).e;
+  assert.equal(e.totals.net, walletEarn);
+  assert.equal(e.totals.trips, 2);
   await h.close();
 });

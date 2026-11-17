@@ -53,7 +53,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                       padding: const EdgeInsets.all(16),
                       child: Column(
                         children: [
-                          const Text('Last 7 days, after the Smart Boda fee'),
+                          const Text('Paid to you through the app, last 7 days'),
                           Text(ugx(e.net),
                               style: Theme.of(context)
                                   .textTheme
@@ -92,8 +92,8 @@ class _EarningsScreenState extends State<EarningsScreen> {
                   for (final d in e.byDay)
                     ListTile(
                       title: Text(d.day),
-                      subtitle: Text('${d.trips} trips'),
-                      trailing: Text(ugx(d.net), style: const TextStyle(fontWeight: FontWeight.w600)),
+                      subtitle: Text('${d.trips} trips${d.net > 0 ? ' · ${ugx(d.net)} paid in the app' : ''}'),
+                      trailing: Text(ugx(d.gross), style: const TextStyle(fontWeight: FontWeight.w600)),
                     ),
                   if (e.byDay.isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('No trips yet.')),
                 ],

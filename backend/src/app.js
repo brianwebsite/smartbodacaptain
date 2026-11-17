@@ -206,7 +206,9 @@ export function createApp({
       pinVerified: Boolean(row.pin_verified),
     };
     // Only the passenger sees the code; they tell it to the rider when the rider arrives.
-    if (viewer === 'passenger' && row.pickup_pin && !row.pin_verified && ['accepted', 'arrived'].includes(row.status)) {
+    // For a delivery the code is used at the end, so the sender can pass it to the receiver.
+    const pinStates = row.kind === 'delivery' ? ['accepted', 'arrived', 'in_progress'] : ['accepted', 'arrived'];
+    if (viewer === 'passenger' && row.pickup_pin && !row.pin_verified && pinStates.includes(row.status)) {
       view.pickupPin = row.pickup_pin;
     }
     if (viewer === 'passenger' || viewer === 'admin') {
@@ -245,7 +247,8 @@ export function createApp({
       };
       view.passengerRating = row.passenger_rating;
       view.commission = row.commission;
-      view.captainEarnings = row.captain_earnings;
+      // Cash is the captain's own money and only commission is taken from credit, so earnings show for in-app payments only.
+      view.captainEarnings = viewer === 'captain' && row.payment_method === 'cash' ? null : row.captain_earnings;
     }
     return view;
   }
@@ -1408,8 +1411,8 @@ export function createApp({
         } else if (fresh.status === S.IN_PROGRESS) {
           const since = Date.parse(at) - Date.parse(lastAt(S.IN_PROGRESS));
           const tracked = trackOverrun(fresh, p, prev);
-          if (since >= 120_000 && haversineKm(p, trip.dropoff) <= DROPOFF_KM) {
-            completeTrip(tracked, 'system', null);
+          if (fresh.kind !== 'delivery' && since >= 120_000 && haversineKm(p, trip.dropoff) <= DROPOFF_KM) {
+            completeTrip(tracked, 'system', null); // a delivery is only finished with the receiver's code
           } else if (tracked.overrun_km >= OVERRUN_LIMIT_KM) {
             completeTrip(tracked, 'system', null); // drove on and never finished: end it and charge
           }
@@ -1445,11 +1448,11 @@ export function createApp({
     if (forRole !== 'passenger') {
       receipt.commission = row.commission;
       receipt.commissionRate = row.commission_rate;
-      receipt.riderEarnings = row.captain_earnings;
+      if (digital) receipt.riderEarnings = row.captain_earnings; // cash trips: the rider keeps the cash, nothing to show
       if (row.overrun_commission > 0) receipt.overrunCommission = row.overrun_commission;
       receipt.earningsNote = digital
         ? 'Paid through the app: this amount is payable to the rider.'
-        : 'Collected in cash by the rider. It does not pass through Smart Boda.';
+        : 'Collected in cash by the rider. Only the commission is taken, from the rider\'s credit.';
     }
     return receipt;
   }
@@ -1658,9 +1661,15 @@ export function createApp({
         const out = transaction(db, () => {
           const row = getTripRow(params.id);
           if (!row || row.captain_id !== user.id) throw new HttpError(404, 'Trip not found');
-          if (status === S.IN_PROGRESS && row.pickup_pin && row.status === S.ARRIVED) {
-            // The passenger's 4-digit code proves the right person is on the vehicle.
-            if (row.pin_attempts >= 5) throw new HttpError(429, 'Too many wrong codes. Ask support to help you start this trip.', 'pin_locked');
+          // A ride is started with the passenger's 4-digit code (the right person is on board).
+          // A delivery is finished with it (the receiver has the item).
+          const isDelivery = row.kind === 'delivery';
+          const needsPin =
+            row.pickup_pin && !row.pin_verified &&
+            ((!isDelivery && status === S.IN_PROGRESS && row.status === S.ARRIVED) ||
+              (isDelivery && status === S.COMPLETED));
+          if (needsPin) {
+            if (row.pin_attempts >= 5) throw new HttpError(429, 'Too many wrong codes. Ask support for help.', 'pin_locked');
             const given = String((body && body.pin) ?? '').trim();
             if (given !== row.pickup_pin) {
               // Counted outside the transaction so the failed attempt is kept.
@@ -1677,7 +1686,7 @@ export function createApp({
         });
         if (out.wrongPin) {
           db.prepare('UPDATE trips SET pin_attempts = pin_attempts + 1 WHERE id = ?').run(out.wrongPin);
-          throw new HttpError(400, 'That code is not right. Ask the passenger for the 4-digit code in their app.', 'wrong_pin');
+          throw new HttpError(400, 'That code is not right. Ask for the 4-digit code again.', 'wrong_pin');
         }
         return out;
       },
@@ -1713,14 +1722,14 @@ export function createApp({
       const totals = db
         .prepare(
           `SELECT COUNT(*) AS trips, COALESCE(SUM(fare),0) AS gross, COALESCE(SUM(commission),0) AS commission,
-             COALESCE(SUM(captain_earnings),0) AS net
+             COALESCE(SUM(CASE WHEN payment_method = 'wallet' THEN captain_earnings END),0) AS net
            FROM trips WHERE captain_id = ? AND status = 'completed' AND completed_at >= ?`,
         )
         .get(user.id, since);
       const byDay = db
         .prepare(
           `SELECT date(datetime(completed_at, '+3 hours')) AS day, COUNT(*) AS trips,
-             SUM(fare) AS gross, SUM(captain_earnings) AS net
+             SUM(fare) AS gross, COALESCE(SUM(CASE WHEN payment_method = 'wallet' THEN captain_earnings END),0) AS net
            FROM trips WHERE captain_id = ? AND status = 'completed' AND completed_at >= ?
            GROUP BY day ORDER BY day DESC`,
         )

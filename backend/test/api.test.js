@@ -203,7 +203,8 @@ test('a full cash trip from request to rating, with earnings and commission', as
   assert.equal(offer.trip.id, tripId);
   assert.equal(offer.trip.passenger.name, 'Amina');
   assert.ok(offer.distanceToPickupKm < 1);
-  assert.equal(offer.trip.commission + offer.trip.captainEarnings, offer.trip.fare);
+  assert.equal(offer.trip.captainEarnings, null); // a cash trip: the rider keeps the cash, so no earnings are shown
+  assert.ok(offer.trip.commission > 0);
 
   const acc = await h.call('POST', `/api/trips/${tripId}/accept`, {}, c.token);
   assert.equal(acc.status, 200);
@@ -252,7 +253,7 @@ test('a full cash trip from request to rating, with earnings and commission', as
   const earn = await h.call('GET', '/api/captain/earnings?days=7', undefined, c.token);
   assert.equal(earn.body.totals.trips, 1);
   assert.equal(earn.body.totals.gross, est.body.fare);
-  assert.equal(earn.body.totals.commission + earn.body.totals.net, est.body.fare);
+  assert.equal(earn.body.totals.net, 0); // a cash trip adds nothing to "what you get": the cash is the rider's own
   assert.equal(earn.body.byDay.length, 1);
   // Cash trip: the commission came out of the credit (100,000 minus the commission), nothing was added to earnings payable.
   assert.equal(earn.body.credit.free, 100000 - earn.body.totals.commission);

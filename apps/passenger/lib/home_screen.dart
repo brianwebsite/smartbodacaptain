@@ -1094,7 +1094,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               children: [
                 const Icon(Icons.lock_outline, color: brandPrimary),
                 const SizedBox(width: 10),
-                const Expanded(child: Text('Your trip code. Tell it to the captain only when you are on board.')),
+                Expanded(
+                  child: Text(t.isDelivery
+                      ? 'Delivery code. Give it to the person receiving the item. The captain asks for it at the drop-off.'
+                      : 'Your trip code. Tell it to the captain only when you are on board.'),
+                ),
                 Text(t.pickupPin!, style: th.headlineSmall?.copyWith(fontWeight: FontWeight.bold, letterSpacing: 4)),
               ],
             ),

@@ -90,14 +90,14 @@ class _ReceiptSheetState extends State<_ReceiptSheet> {
             _row('Smart Boda commission', ugx(r['commission'] as num)),
             if (r['overrunCommission'] != null)
               _row('Extra commission (driven past the drop-off)', ugx(r['overrunCommission'] as num)),
-            _row('Rider earnings (before costs)', ugx(r['riderEarnings'] as num)),
+            if (r['riderEarnings'] != null) _row('Paid to you in the app', ugx(r['riderEarnings'] as num)),
             const SizedBox(height: 4),
             Text(r['earningsNote'] as String, style: t.bodySmall),
           ],
           if (r['pinVerified'] == true)
-            const Padding(
-              padding: EdgeInsets.only(top: 8),
-              child: Text('Trip started with the passenger\'s code.', style: TextStyle(fontSize: 12)),
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(r['kind'] == 'delivery' ? 'Delivery confirmed with the receiver\'s code.' : 'Trip started with the passenger\'s code.', style: const TextStyle(fontSize: 12)),
             ),
         ],
       );

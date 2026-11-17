@@ -166,27 +166,37 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// The passenger's 4-digit code proves the right person is on board.
-  Future<void> _start(Trip t) async {
+  Future<String?> _askCode({required String title, required String helper, required String button}) async {
     final ctrl = TextEditingController();
     final pin = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Trip code'),
+        title: Text(title),
         content: TextField(
           controller: ctrl,
           autofocus: true,
           keyboardType: TextInputType.number,
           maxLength: 4,
-          decoration: const InputDecoration(helperText: 'Ask the passenger for the 4-digit code in their app.'),
+          decoration: InputDecoration(helperText: helper),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()), child: const Text('Start')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()), child: Text(button)),
         ],
       ),
     );
-    if (pin == null || pin.isEmpty) return;
+    return pin == null || pin.isEmpty ? null : pin;
+  }
+
+  /// A ride starts with the passenger's 4-digit code (the right person is on board).
+  /// A delivery starts with no code: its code is asked for at the end, at the drop-off.
+  Future<void> _start(Trip t) async {
+    if (t.isDelivery) {
+      await _act('/api/trips/${t.id}/start');
+      return;
+    }
+    final pin = await _askCode(title: 'Trip code', helper: 'Ask the passenger for the 4-digit code in their app.', button: 'Start');
+    if (pin == null) return;
     await _act('/api/trips/${t.id}/start', {'pin': pin});
   }
 
@@ -210,7 +220,14 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _complete(Trip t) async {
-    await _act('/api/trips/${t.id}/complete');
+    Map<String, dynamic>? body;
+    if (t.isDelivery) {
+      // The receiver's code confirms the delivery reached them.
+      final pin = await _askCode(title: 'Delivery code', helper: 'Ask the receiver for the 4-digit delivery code.', button: 'Confirm');
+      if (pin == null) return;
+      body = {'pin': pin};
+    }
+    await _act('/api/trips/${t.id}/complete', body);
     if (!mounted || _error != null) return;
     _lastTrip = null;
     await _showTripDone(t);
@@ -409,7 +426,7 @@ class _HomeScreenState extends State<HomeScreen> {
               key: const ValueKey('driving'),
               padding: const EdgeInsets.symmetric(vertical: 6),
               child: Text(
-                '${km!.toStringAsFixed(1)} km to the drop-off',
+                '${km.toStringAsFixed(1)} km to the drop-off',
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
               ),
@@ -544,7 +561,7 @@ class _HomeScreenState extends State<HomeScreen> {
         Text(
           t.paymentMethod == 'wallet'
               ? '${ugx(t.fare)} paid from the passenger wallet · ${ugx(t.captainEarnings ?? t.fare)} goes to your wallet · ${t.distanceKm} km'
-              : '${ugx(t.fare)} cash · you keep ${ugx(t.captainEarnings ?? t.fare)} · ${t.distanceKm} km',
+              : '${ugx(t.fare)} cash · ${t.distanceKm} km',
         ),
         if (_error != null)
           Padding(
@@ -598,7 +615,8 @@ class _OfferCard extends StatelessWidget {
               children: [
                 if (t.isDelivery) const Padding(padding: EdgeInsets.only(right: 6), child: Icon(Icons.inventory_2_outlined, size: 20, color: brandPrimary)),
                 Expanded(
-                  child: Text('${t.isDelivery ? 'Delivery · ' : ''}${ugx(t.captainEarnings ?? t.fare)} for you · ${t.distanceKm} km',
+                  child: Text(
+                      '${t.isDelivery ? 'Delivery · ' : ''}${t.paymentMethod == 'wallet' ? '${ugx(t.captainEarnings ?? t.fare)} for you, paid in the app' : '${ugx(t.fare)} cash'} · ${t.distanceKm} km',
                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
                 ),
               ],

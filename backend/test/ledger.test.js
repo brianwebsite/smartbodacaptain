@@ -75,7 +75,7 @@ async function harness() {
     await ping(r);
     return call('POST', `/api/trips/${id}/accept`, {}, r.token);
   };
-  const step = (r, id, what) => call('POST', `/api/trips/${id}/${what}`, what === 'start' ? { pin: db.prepare('SELECT pickup_pin FROM trips WHERE id = ?').get(id).pickup_pin } : {}, r.token);
+  const step = (r, id, what) => call('POST', `/api/trips/${id}/${what}`, what === 'start' || what === 'complete' ? { pin: db.prepare('SELECT pickup_pin FROM trips WHERE id = ?').get(id).pickup_pin } : {}, r.token);
   const bal = (r) => ({
     free: wallet.creditFree(db, r.id), reserved: wallet.creditReserved(db, r.id), payable: wallet.earningsPayable(db, r.id),
   });
@@ -103,7 +103,7 @@ test('the brief: UGX 10,000 top-up, UGX 5,000 cash ride, UGX 500 commission', as
   assert.equal(pos.commissionRevenue, 500);
   assert.equal(pos.riderPayable, 0);
   const done = (await h.call('GET', `/api/trips/${t.id}`, undefined, rider.token)).body.trip;
-  assert.equal(done.captainEarnings, 4500); // for reporting only: the rider already holds the cash
+  assert.equal(done.captainEarnings, null); // cash: the rider already holds it, so nothing is shown as earnings
   assert.deepEqual(ledger.unbalancedJournals(h.db), []);
   await h.close();
 });
@@ -300,7 +300,7 @@ test('receipts: passenger sees the fare, rider also sees commission; outsiders s
   const r = (await h.call('GET', `/api/trips/${t.id}/receipt`, undefined, rider.token)).body.receipt;
   assert.equal(r.commission, 500);
   assert.equal(r.commissionRate, 0.1);
-  assert.equal(r.riderEarnings, 4500);
+  assert.equal(r.riderEarnings, undefined); // cash trip: no earnings shown
   assert.equal((await h.call('GET', `/api/trips/${t.id}/receipt`, undefined, other.token)).status, 404);
   await h.close();
 });
