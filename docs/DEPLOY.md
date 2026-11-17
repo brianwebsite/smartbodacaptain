@@ -127,7 +127,7 @@ For best delivery to inboxes, send from your own domain (add Brevo's DNS records
 ## Push notifications (Firebase Cloud Messaging, free)
 1. console.firebase.google.com > Add project (turn Google Analytics off).
 2. Project overview > Add app > Android. Package name `ug.smartboda.passenger`, then repeat for `ug.smartboda.captain`. Download each `google-services.json`.
-3. Put them in the repository as `apps/passenger/google-services.json` and `apps/captain/google-services.json`. The next build turns push on in the apps.
+3. Put them in the repository as `apps/passenger/google-services.json` and `apps/captain/google-services.json`. The next build turns push on in the apps. (These files only identify the app and are safe to commit. The private key in step 4 is the secret one.)
 4. Project settings > Service accounts > Generate new private key. Open the downloaded JSON file, copy ALL of its text, and set it in Render as `FIREBASE_SERVICE_ACCOUNT`. Keep this file secret; never commit it.
 5. Redeploy. The log says `Push notifications: on`. Install the new APKs, sign in, and allow notifications.
 Riders get a push for new nearby requests; passengers for accepted, arrived, started, completed and no-captain; both for messages and cancellations.

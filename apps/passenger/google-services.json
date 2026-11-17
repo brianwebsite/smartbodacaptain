@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "353048428980",
+    "project_id": "smart-boda-7c7f2",
+    "storage_bucket": "smart-boda-7c7f2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:353048428980:android:842e36c92fa8b94bbe72e1",
+        "android_client_info": {
+          "package_name": "ug.smartboda.passenger"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDmGjWWFU9BJIODcu1x80EZ9UNg4gS2T6c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
