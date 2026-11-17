@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'api.dart';
+import 'emergency.dart';
 import 'format.dart';
 import 'models.dart';
 import 'profile_photo.dart';
@@ -326,6 +327,15 @@ class _TripInfoScreenState extends State<TripInfoScreen> {
                 ],
               ),
             ),
+
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: OutlinedButton.icon(
+              onPressed: () => showEmergencySheet(context, widget.api, tripId: t.id, reportOnly: true),
+              icon: const Icon(Icons.flag_outlined),
+              label: const Text('Report a problem with this trip'),
+            ),
+          ),
 
           if (r != null)
             _card(

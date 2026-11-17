@@ -329,12 +329,24 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       children: [
         Expanded(
-          child: BodaMap(
-            controller: _map,
-            center: _here ?? kampalaCentre,
-            userAgentPackageName: 'ug.smartboda.captain',
-            markers: _markers(),
-            lines: _lines(),
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: BodaMap(
+                  controller: _map,
+                  center: _here ?? kampalaCentre,
+                  userAgentPackageName: 'ug.smartboda.captain',
+                  markers: _markers(),
+                  lines: _lines(),
+                ),
+              ),
+              if (_trip != null && _trip!.status == 'in_progress')
+                Positioned(
+                  left: 12,
+                  bottom: 12,
+                  child: SosButton(onPressed: () => showEmergencySheet(context, _api, tripId: _trip!.id)),
+                ),
+            ],
           ),
         ),
         Material(

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
+import 'faq_screen.dart';
 import 'format.dart';
 import 'phone_actions.dart';
 import 'profile_photo.dart';
@@ -146,6 +147,8 @@ class AccountMenu extends StatelessWidget {
               subtitle: PushService.isOn ? 'On' : 'Tap to allow and test'),
           tile(Icons.phone_forwarded_outlined, 'Backup contact number', () => _backupDialog(context),
               subtitle: u.backupPhone ?? 'Add a second number we can reach you on'),
+          tile(Icons.help_outline, 'Help and FAQ',
+              () => push(FaqScreen(api: session.api, isCaptain: isCaptain, onContact: () => push(ContactScreen(api: session.api))))),
           tile(Icons.support_agent, 'Contact us', () => push(ContactScreen(api: session.api))),
           const SizedBox(height: 16),
           OutlinedButton.icon(

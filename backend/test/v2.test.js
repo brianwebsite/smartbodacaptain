@@ -673,3 +673,76 @@ test('captains see earnings only for trips paid from the app wallet', async () =
   assert.equal(e.totals.trips, 2);
   await h.close();
 });
+
+test('an emergency alert is saved, emailed to Smart Boda, and shown to the admin', async () => {
+  const sent = [];
+  const h = await harness({ mailer: { send: async (m) => sent.push(m) } });
+  const cap = await h.captain();
+  const p = await h.passenger();
+  const t = await h.request(p);
+  const id = t.body.trip.id;
+  await h.accept(cap, id);
+
+  // Not someone else's trip.
+  const stranger = await h.passenger();
+  assert.equal((await h.call('POST', '/api/incidents', { category: 'fraud', tripId: id }, stranger.token)).status, 404);
+  assert.equal((await h.call('POST', '/api/incidents', { category: 'nonsense' }, p.token)).status, 400);
+
+  const r = await h.call('POST', '/api/incidents', { category: 'dispute', note: 'He wants more money', tripId: id, lat: 0.36, lng: 32.61 }, p.token);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.emailed, true);
+  await new Promise((resolve) => setTimeout(resolve, 50)); // the email goes out in the background
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, 'smartbodarides@gmail.com');
+  assert.match(sent[0].subject, /^DISPUTE/);
+  assert.match(sent[0].text, /He wants more money/);
+  assert.match(sent[0].text, /maps\?q=0\.36,32\.61/);
+  assert.match(sent[0].text, /Captain Cap/);
+
+  const list = (await h.call('GET', '/api/admin/incidents', undefined, h.adminToken)).body.incidents;
+  assert.equal(list.length, 1);
+  assert.equal(list[0].category, 'dispute');
+  assert.ok(list[0].emailedAt);
+  assert.equal(list[0].other.name, 'Cap');
+  assert.equal((await h.call('GET', '/api/admin/incidents', undefined, p.token)).status, 403);
+  assert.equal((await h.call('GET', '/api/admin/stats', undefined, h.adminToken)).body.openIncidents, 1);
+  assert.equal((await h.call('POST', `/api/admin/incidents/${list[0].id}/resolve`, { resolution: 'Called both' }, h.adminToken)).status, 200);
+  assert.equal((await h.call('GET', '/api/admin/stats', undefined, h.adminToken)).body.openIncidents, 0);
+
+  // The alert address is not given to the apps; the call numbers are.
+  const info = (await h.call('GET', '/api/app-info')).body.app;
+  assert.equal(info.emergencyEmail, undefined);
+  assert.equal(info.emergencyPhone, '0788465140');
+  assert.equal(info.policePhone, '999');
+  await h.close();
+});
+
+test('ratings and comments show up for the admin; the FAQ answers by account type', async () => {
+  const h = await harness();
+  const cap = await h.captain();
+  const p = await h.passenger();
+  const t = await h.request(p);
+  const id = t.body.trip.id;
+  await h.accept(cap, id);
+  await h.finish(cap, id);
+  assert.equal((await h.call('POST', `/api/trips/${id}/rate`, { rating: 2, comment: 'Rude and slow' }, p.token)).status, 200);
+  assert.equal((await h.call('POST', `/api/trips/${id}/rate-passenger`, { rating: 5 }, cap.token)).status, 200);
+  const r = (await h.call('GET', '/api/admin/reviews', undefined, h.adminToken)).body;
+  assert.equal(r.reviews.length, 2);
+  const toCaptain = r.reviews.find((x) => x.direction === 'Passenger rated captain');
+  assert.equal(toCaptain.stars, 2);
+  assert.equal(toCaptain.comment, 'Rude and slow');
+  assert.equal(toCaptain.about.name, 'Cap');
+  assert.equal(r.summary.lowRatings, 1);
+  assert.equal(r.summary.captainAverage, 2);
+  assert.equal((await h.call('GET', '/api/admin/reviews?max=2', undefined, h.adminToken)).body.reviews.length, 1);
+  assert.equal((await h.call('GET', '/api/admin/reviews', undefined, p.token)).status, 403);
+
+  const pf = (await h.call('GET', '/api/faq?audience=passenger')).body.faq;
+  const cf = (await h.call('GET', '/api/faq?audience=captain')).body.faq;
+  assert.ok(pf.some((e) => /ask for a ride/i.test(e.q)));
+  assert.ok(!pf.some((e) => /commission credit/i.test(e.q)));
+  assert.ok(cf.some((e) => /commission credit/i.test(e.q)));
+  assert.ok(pf.some((e) => /forgot my password/i.test(e.q)) && cf.some((e) => /forgot my password/i.test(e.q)));
+  await h.close();
+});

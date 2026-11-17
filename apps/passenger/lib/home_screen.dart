@@ -707,6 +707,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                if (t != null && t.status == 'in_progress')
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 0, 0, 12),
+                      child: SosButton(onPressed: () => showEmergencySheet(context, _api, tripId: t.id)),
+                    ),
+                  ),
                 Align(
                   alignment: Alignment.centerRight,
                   child: Padding(

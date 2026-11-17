@@ -24,6 +24,9 @@ export const DEFAULT_LIMITS = Object.freeze({
 export const DEFAULT_APP = Object.freeze({
   supportPhone: '',
   supportEmail: '',
+  emergencyPhone: '0788465140', // the line people can call at once when something is wrong
+  emergencyEmail: 'smartbodarides@gmail.com', // where emergency alerts are emailed (never shown in the apps)
+  policePhone: '999', // Uganda's police emergency number
   whatsapp: '',
   facebook: '',
   instagram: '',
@@ -107,7 +110,7 @@ export function updateSettings(db, body) {
   if (body.app !== undefined) {
     const a = obj(body.app, 'app');
     const next = { ...getAppInfo(db) };
-    for (const k of ['supportPhone', 'supportEmail', 'about']) {
+    for (const k of ['supportPhone', 'supportEmail', 'emergencyPhone', 'emergencyEmail', 'policePhone', 'about']) {
       if (a[k] !== undefined) next[k] = text(a[k], k, { min: 0, max: k === 'about' ? 600 : 120, optional: true }) ?? '';
     }
     for (const k of ['whatsapp', 'facebook', 'instagram', 'x', 'tiktok', 'youtube', 'androidStoreUrl']) {

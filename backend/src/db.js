@@ -149,6 +149,24 @@ CREATE TABLE IF NOT EXISTS push_tokens (
 );
 CREATE INDEX IF NOT EXISTS push_tokens_user ON push_tokens(user_id);
 
+CREATE TABLE IF NOT EXISTS incidents (
+  id TEXT PRIMARY KEY,
+  trip_id TEXT,
+  reporter_id TEXT NOT NULL REFERENCES users(id),
+  reporter_role TEXT NOT NULL,
+  category TEXT NOT NULL,
+  note TEXT,
+  lat REAL,
+  lng REAL,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL,
+  emailed_at TEXT,
+  email_error TEXT,
+  resolved_at TEXT,
+  resolution TEXT
+);
+CREATE INDEX IF NOT EXISTS incidents_status ON incidents(status, created_at);
+
 CREATE TABLE IF NOT EXISTS password_resets (
   token_hash TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),

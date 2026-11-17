@@ -67,6 +67,8 @@ Passengers who signed up with an email can reset their password with a 6-digit c
 1. Create a Brevo account and verify one sender address (an address you can receive mail at).
 2. In Brevo, make an API key (SMTP & API, API keys).
 3. Set two environment variables on the server: `BREVO_API_KEY` (the key) and `MAIL_FROM` (the verified sender address). Restart.
+
+The same sender also emails **emergency alerts**. When a rider or captain presses the glowing SOS button (shown during a trip) or reports a problem, an email goes to the alert address (default smartboda rides address; change it in the admin Settings page, with the emergency phone and police number). Every report also appears in the admin **Emergencies** tab. Without Brevo the report is still saved there, only the email is skipped.
 The log line `Password reset email: on` confirms it. Without these, the app tells people to contact support, and you can reset any password yourself in the admin dashboard (Users & wallets, Reset password).
 
 ## Server settings summary

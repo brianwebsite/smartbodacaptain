@@ -124,12 +124,13 @@ function renderLogin(message) {
 }
 
 // ---------- shell ----------
-const TABS = [['overview', 'Overview'], ['captains', 'Captains'], ['users', 'Users & wallets'], ['live', 'Live'], ['trips', 'Trips'], ['review', 'Review'], ['settings', 'Settings']];
+const TABS = [['overview', 'Overview'], ['captains', 'Captains'], ['users', 'Users & wallets'], ['live', 'Live'], ['trips', 'Trips'], ['emergencies', 'Emergencies'], ['reviews', 'Reviews'], ['review', 'Review'], ['settings', 'Settings']];
 
 function renderShell() {
   const nav = h('nav', {}, TABS.map(([id, label]) => {
     const b = h('button', { class: state.tab === id ? 'on' : '', onclick: () => { state.tab = id; renderShell(); } }, label,
-      id === 'captains' && state.pendingCount > 0 ? h('span', { class: 'badge' }, state.pendingCount) : null);
+      id === 'captains' && state.pendingCount > 0 ? h('span', { class: 'badge' }, state.pendingCount) :
+        (id === 'emergencies' && state.openIncidents > 0 ? h('span', { class: 'badge', style: 'background:#e53935;color:#fff' }, state.openIncidents) : null));
     return b;
   }));
   const body = h('main', {});
@@ -137,16 +138,21 @@ function renderShell() {
     h('header', {}, h('h1', {}, 'Smart Boda Admin'), h('button', { onclick: signOut }, 'Sign out')),
     nav, body);
   clearInterval(state.timer);
-  const views = { overview, captains, users, live, trips, review, settings };
+  const views = { overview, captains, users, live, trips, emergencies, reviews, review, settings };
   const run = () => views[state.tab](body).catch((e) => { if (e.message !== 'Signed out') body.replaceChildren(h('div', { class: 'err' }, e.message)); });
   run();
-  if (state.tab === 'live' || state.tab === 'overview') state.timer = setInterval(run, 6000);
+  if (state.tab === 'live' || state.tab === 'overview' || state.tab === 'emergencies') state.timer = setInterval(run, 6000);
   refreshBadge();
 }
 
 async function refreshBadge() {
   try {
     const s = await api('/api/admin/stats');
+    if (s.openIncidents !== state.openIncidents) {
+      state.openIncidents = s.openIncidents;
+      const eb = [...document.querySelectorAll('nav button')].find((b) => b.firstChild && b.firstChild.textContent === 'Emergencies');
+      if (eb) { eb.querySelector('.badge')?.remove(); if (s.openIncidents > 0) eb.append(h('span', { class: 'badge', style: 'background:#e53935;color:#fff' }, s.openIncidents)); }
+    }
     if (s.captainsPending !== state.pendingCount) {
       state.pendingCount = s.captainsPending;
       const btn = document.querySelectorAll('nav button')[1];
@@ -159,6 +165,10 @@ async function refreshBadge() {
 async function overview(body) {
   const s = await api('/api/admin/stats');
   state.pendingCount = s.captainsPending;
+  state.openIncidents = s.openIncidents;
+  const alertBox = s.openIncidents > 0 ? h('div', { class: 'panel', style: 'margin-bottom:12px;padding:12px;border:2px solid #e53935;background:#fff0f0' },
+    h('strong', { style: 'color:#b71c1c' }, s.openIncidents + (s.openIncidents === 1 ? ' emergency alert is waiting' : ' emergency alerts are waiting')),
+    h('div', {}, h('button', { class: 'act', onclick: () => { state.tab = 'emergencies'; renderShell(); } }, 'Open Emergencies'))) : null;
   const card = (n, l) => h('div', { class: 'card' }, h('div', { class: 'n' }, n), h('div', { class: 'l' }, l));
   const ps = await api('/api/admin/payments-status').catch(() => null);
   const out = h('span', { class: 'muted' });
@@ -210,7 +220,7 @@ async function overview(body) {
     pu.lastError ? h('div', { style: 'color:#b3261e' }, 'Last problem (' + when(pu.lastErrorAt) + '): ' + pu.lastError) : null,
     h('div', { class: 'muted' }, 'Each person can press Account > Notifications in their app to send themselves a test.')) : null;
   body.replaceChildren(
-    h('h2', {}, 'Overview'), payBox, backupBox, pushBox,
+    h('h2', {}, 'Overview'), alertBox, payBox, backupBox, pushBox,
     h('div', { class: 'cards' },
       card(s.captainsPending, 'Captains waiting for approval'),
       card(s.captainsOnline, 'Captains online now'),
@@ -372,6 +382,58 @@ async function trips(body) {
     h('div', { class: 'panel' }, list.length === 0 ? h('div', { class: 'empty' }, 'No trips yet.') : tripTable(list)));
 }
 
+// ---------- emergencies ----------
+async function emergencies(body) {
+  const { incidents } = await api('/api/admin/incidents?status=all');
+  const tel = (p) => (p ? h('a', { href: 'tel:' + p }, p) : '');
+  const kinds = { emergency: 'EMERGENCY', dispute: 'Dispute', fraud: 'Fraud', unsafe: 'Unsafe', other: 'Other' };
+  body.replaceChildren(h('h2', {}, 'Emergencies and reports'),
+    h('p', { class: 'muted' }, 'Sent from the SOS button during a trip, or from "Report a problem" on a past trip. Each one is also emailed to the emergency address. Call both people, then mark it resolved.'),
+    h('div', { class: 'panel' }, incidents.length === 0 ? h('div', { class: 'empty' }, 'No alerts. Good.') :
+      h('table', {},
+        h('thead', {}, h('tr', {}, ['When', 'What', 'From', 'The other person', 'Trip', 'Where', ''].map((t) => h('th', {}, t)))),
+        h('tbody', {}, incidents.map((i) => h('tr', { style: i.status === 'open' ? 'background:#fff0f0' : '' },
+          h('td', {}, when(i.createdAt)),
+          h('td', {}, h('strong', { style: i.status === 'open' ? 'color:#b71c1c' : '' }, kinds[i.category] || i.category), i.note ? h('div', {}, i.note) : null,
+            h('div', { class: 'muted' }, i.emailedAt ? 'Emailed' : (i.emailError ? 'Email failed: ' + i.emailError : 'Email pending'))),
+          h('td', {}, h('strong', {}, i.reporter.name || ''), h('div', { class: 'muted' }, i.reporter.role === 'captain' ? 'rider' : 'passenger'), tel(i.reporter.phone)),
+          h('td', {}, i.other ? [h('div', {}, i.other.name || ''), tel(i.other.phone)] : h('span', { class: 'muted' }, 'none')),
+          h('td', { class: 'muted' }, i.trip ? [(i.trip.pickup || '') + ' → ' + (i.trip.dropoff || ''), h('div', {}, i.trip.status + ' · ' + ugx(i.trip.fare))] : ''),
+          h('td', {}, i.location ? h('a', { href: 'https://www.google.com/maps?q=' + i.location.lat + ',' + i.location.lng, target: '_blank', rel: 'noopener' }, 'Open map') : h('span', { class: 'muted' }, 'not shared')),
+          h('td', {}, i.status === 'open'
+            ? h('button', { class: 'act', onclick: async (e) => {
+              const note = prompt('What was done? (optional)') ?? '';
+              e.target.disabled = true;
+              try { await api('/api/admin/incidents/' + i.id + '/resolve', { method: 'POST', body: { resolution: note } }); } catch (ex) { alert(ex.message); }
+              renderShell();
+            } }, 'Mark resolved')
+            : h('span', { class: 'muted' }, 'Resolved ' + when(i.resolvedAt) + (i.resolution ? ': ' + i.resolution : '')))))))));
+}
+
+// ---------- reviews ----------
+async function reviews(body) {
+  const only = state.lowOnly ? '?max=2' : '';
+  const { summary, reviews: list } = await api('/api/admin/reviews' + only);
+  const stars = (n) => '★'.repeat(n) + '☆'.repeat(5 - n);
+  const card = (n, l) => h('div', { class: 'card' }, h('div', { class: 'n' }, n), h('div', { class: 'l' }, l));
+  body.replaceChildren(h('h2', {}, 'Ratings and reviews'),
+    h('div', { class: 'cards' },
+      card(summary.captainAverage == null ? '-' : summary.captainAverage + ' ★', 'Average rating of riders (' + summary.captainCount + ' ratings)'),
+      card(summary.passengerAverage == null ? '-' : summary.passengerAverage + ' ★', 'Average rating of passengers (' + summary.passengerCount + ' ratings)'),
+      card(summary.lowRatings, 'Low ratings (1 or 2 stars)')),
+    h('div', { style: 'margin:10px 0' }, h('label', {}, h('input', { type: 'checkbox', checked: state.lowOnly ? 'checked' : null, onchange: (e) => { state.lowOnly = e.target.checked; renderShell(); } }), ' Show only low ratings (1 or 2 stars)')),
+    h('div', { class: 'panel' }, list.length === 0 ? h('div', { class: 'empty' }, 'No ratings yet.') :
+      h('table', {},
+        h('thead', {}, h('tr', {}, ['When', 'Who rated', 'Rated', 'Stars', 'Comment', 'Trip'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, list.map((r) => h('tr', {},
+          h('td', {}, when(r.at)),
+          h('td', {}, h('strong', {}, r.from.name || ''), h('div', { class: 'muted' }, r.direction)),
+          h('td', {}, r.about.name || '', h('div', { class: 'muted' }, r.about.phone || '')),
+          h('td', { style: 'white-space:nowrap;color:' + (r.stars <= 2 ? '#c62828' : '#b26a00') }, stars(r.stars)),
+          h('td', {}, r.comment || h('span', { class: 'muted' }, 'no comment')),
+          h('td', { class: 'muted' }, r.route, h('div', {}, r.tripId.slice(0, 8)))))))));
+}
+
 // ---------- settings ----------
 async function settings(body) {
   const s = await api('/api/admin/settings');
@@ -381,6 +443,9 @@ async function settings(body) {
   const t = {
     supportPhone: tfield('Support phone number', s.app.supportPhone, '+2567...'),
     supportEmail: tfield('Support email', s.app.supportEmail),
+    emergencyPhone: tfield('Emergency phone (people call this from the SOS button)', s.app.emergencyPhone, '0788465140'),
+    emergencyEmail: tfield('Emergency alert email (alerts are sent here)', s.app.emergencyEmail, 'smartbodarides@gmail.com'),
+    policePhone: tfield('Police number', s.app.policePhone, '999'),
     whatsapp: tfield('WhatsApp link', s.app.whatsapp, 'https://wa.me/2567...'),
     facebook: tfield('Facebook link', s.app.facebook, 'https://facebook.com/...'),
     instagram: tfield('Instagram link', s.app.instagram, 'https://instagram.com/...'),

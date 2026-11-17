@@ -26,6 +26,7 @@ import * as wallet from './wallet.js';
 import * as ledger from './ledger.js';
 import { captainCancelCounts, passengerCancelCount, captainStanding, passengerStanding, reviewFlags } from './behavior.js';
 import { haversineKm } from './geo.js';
+import { faqFor } from './faq.js';
 import { isVerifiedSuccess, isFailedStatus } from './livepay.js';
 import { VEHICLE_TYPES, VEHICLE_SEATS, CANCEL_REASONS, scaleFareConfig, etaMinutes } from './vehicles.js';
 import { HttpError, bad, obj, text, oneOf, bool, num, int, point } from './validate.js';
@@ -823,7 +824,178 @@ export function createApp({
   );
 
   // Contact details and social links, set by the admin. Public so the apps can show them.
-  router.add('GET', '/api/app-info', () => ({ app: getAppInfo(db) }));
+  router.add('GET', '/api/app-info', () => {
+    const { emergencyEmail, ...open } = getAppInfo(db); // the alert address stays on the server
+    void emergencyEmail;
+    return { app: open };
+  });
+
+  // Ready-made answers (FAQ), for the signed-in person's kind of account.
+  router.add('GET', '/api/faq', ({ query }) => ({ faq: faqFor(query.audience === 'captain' ? 'captain' : 'passenger') }));
+
+  // ---------- emergencies and reports ----------
+  const incidentsByUser = new RateLimiter(8, 60 * 60 * 1000);
+  const INCIDENT_KINDS = ['emergency', 'dispute', 'fraud', 'unsafe', 'other'];
+  router.add(
+    'POST',
+    '/api/incidents',
+    ({ user, body }) => {
+      obj(body);
+      if (!incidentsByUser.allow(user.id, Date.parse(now()))) {
+        throw new HttpError(429, 'You have sent several alerts already. Please call us on the emergency number.', 'rate_limited');
+      }
+      const category = body.category === undefined ? 'emergency' : oneOf(body.category, 'category', INCIDENT_KINDS);
+      const note = text(body.note, 'note', { max: 500, optional: true });
+      let trip = null;
+      if (body.tripId !== undefined && body.tripId !== null) {
+        trip = getTripRow(String(body.tripId));
+        if (!trip || (trip.passenger_id !== user.id && trip.captain_id !== user.id)) throw new HttpError(404, 'Trip not found');
+      }
+      const loc = body.lat != null && body.lng != null ? point({ lat: Number(body.lat), lng: Number(body.lng) }, 'location') : null;
+      const id = randomUUID();
+      const at = now();
+      db.prepare(
+        `INSERT INTO incidents (id, trip_id, reporter_id, reporter_role, category, note, lat, lng, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+      ).run(id, trip?.id ?? null, user.id, user.role, category, note, loc?.lat ?? null, loc?.lng ?? null, at);
+      sendIncidentEmail(id); // in the background: the person gets their answer at once
+      return { ok: true, id, emailed: Boolean(mailer) };
+    },
+    { roles: ['passenger', 'captain'] },
+  );
+
+  function incidentText(inc) {
+    const reporter = getUser(inc.reporter_id);
+    const trip = inc.trip_id ? getTripRow(inc.trip_id) : null;
+    const other = trip ? getUser(inc.reporter_role === 'captain' ? trip.passenger_id : trip.captain_id) : null;
+    const prof = trip?.captain_id ? getProfile(trip.captain_id) : null;
+    const eat = new Date(Date.parse(inc.created_at) + 3 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 16);
+    const who = (u) => (u ? `${u.name}${u.phone ? ` (${u.phone})` : ''}${u.email ? ` ${u.email}` : ''}` : 'unknown');
+    return [
+      `${inc.category.toUpperCase()} reported at ${eat} (Uganda time)`,
+      '',
+      `Reported by: ${inc.reporter_role === 'captain' ? 'Captain' : 'Passenger'} ${who(reporter)}`,
+      inc.note ? `What they said: ${inc.note}` : null,
+      inc.lat != null ? `Their location: https://www.google.com/maps?q=${inc.lat},${inc.lng}` : 'Their location: not shared',
+      '',
+      trip ? `Trip: ${trip.pickup_label ?? 'pickup'} to ${trip.dropoff_label ?? 'drop-off'} (${trip.status}, ${fmtUgx(trip.fare)}, ${trip.kind})` : 'Not linked to a trip',
+      trip ? `The other person: ${inc.reporter_role === 'captain' ? 'Passenger' : 'Captain'} ${who(other)}${prof?.bike_plate ? ` · plate ${prof.bike_plate}` : ''}` : null,
+      '',
+      'Call them now, then mark it resolved in the admin page, under Emergencies.',
+    ].filter((l) => l !== null).join('\n');
+  }
+
+  function sendIncidentEmail(id) {
+    setImmediate(async () => {
+      const inc = db.prepare('SELECT * FROM incidents WHERE id = ?').get(id);
+      if (!inc) return;
+      if (!mailer) {
+        db.prepare('UPDATE incidents SET email_error = ? WHERE id = ?').run('Email is not set up on the server', id);
+        return;
+      }
+      try {
+        const reporter = getUser(inc.reporter_id);
+        await mailer.send({
+          to: getAppInfo(db).emergencyEmail || 'smartbodarides@gmail.com',
+          subject: `${inc.category.toUpperCase()}: ${reporter?.name ?? 'someone'} (${inc.reporter_role}) needs help`,
+          text: incidentText(inc),
+        });
+        db.prepare('UPDATE incidents SET emailed_at = ? WHERE id = ?').run(now(), id);
+      } catch (err) {
+        console.error(`Emergency email failed: ${err.message}`);
+        db.prepare('UPDATE incidents SET email_error = ? WHERE id = ?').run(String(err.message).slice(0, 200), id);
+      }
+    });
+  }
+
+  router.add(
+    'GET',
+    '/api/admin/incidents',
+    ({ query }) => {
+      const rows = db
+        .prepare(
+          `SELECT * FROM incidents ${query.status === 'all' ? '' : "WHERE status = 'open'"}
+           ORDER BY (status = 'open') DESC, created_at DESC LIMIT 100`,
+        )
+        .all();
+      return {
+        incidents: rows.map((i) => {
+          const reporter = getUser(i.reporter_id);
+          const trip = i.trip_id ? getTripRow(i.trip_id) : null;
+          const other = trip ? getUser(i.reporter_role === 'captain' ? trip.passenger_id : trip.captain_id) : null;
+          return {
+            id: i.id, category: i.category, note: i.note, status: i.status, createdAt: i.created_at,
+            emailedAt: i.emailed_at, emailError: i.email_error, resolvedAt: i.resolved_at, resolution: i.resolution,
+            location: i.lat == null ? null : { lat: i.lat, lng: i.lng },
+            reporter: { name: reporter?.name, phone: reporter?.phone, role: i.reporter_role },
+            other: other ? { name: other.name, phone: other.phone } : null,
+            trip: trip ? { id: trip.id, pickup: trip.pickup_label, dropoff: trip.dropoff_label, status: trip.status, fare: trip.fare } : null,
+          };
+        }),
+      };
+    },
+    { roles: ['admin'] },
+  );
+
+  router.add(
+    'POST',
+    '/api/admin/incidents/:id/resolve',
+    ({ params, body }) => {
+      const resolution = text(obj(body).resolution, 'resolution', { max: 300, optional: true });
+      const res = db
+        .prepare("UPDATE incidents SET status = 'resolved', resolved_at = ?, resolution = ? WHERE id = ? AND status = 'open'")
+        .run(now(), resolution, params.id);
+      if (res.changes !== 1) throw new HttpError(404, 'That alert is not open');
+      return { ok: true };
+    },
+    { roles: ['admin'] },
+  );
+
+  // Every rating and comment, so quality problems show up in the admin page.
+  router.add(
+    'GET',
+    '/api/admin/reviews',
+    ({ query }) => {
+      const maxStars = Math.min(5, Math.max(1, Number.parseInt(query.max ?? '5', 10) || 5));
+      const rows = db
+        .prepare(
+          `SELECT t.id, t.completed_at AS at, t.pickup_label, t.dropoff_label, t.kind,
+                  t.rating, t.rating_comment, t.passenger_rating,
+                  p.name AS passenger_name, p.phone AS passenger_phone,
+                  c.name AS captain_name, c.phone AS captain_phone
+           FROM trips t
+           JOIN users p ON p.id = t.passenger_id
+           LEFT JOIN users c ON c.id = t.captain_id
+           WHERE t.rating IS NOT NULL OR t.passenger_rating IS NOT NULL
+           ORDER BY t.completed_at DESC LIMIT 400`,
+        )
+        .all();
+      const reviews = [];
+      for (const r of rows) {
+        if (r.rating != null && r.rating <= maxStars) {
+          reviews.push({ tripId: r.id, at: r.at, kind: r.kind, direction: 'Passenger rated captain', stars: r.rating, comment: r.rating_comment,
+            from: { name: r.passenger_name, phone: r.passenger_phone }, about: { name: r.captain_name, phone: r.captain_phone }, route: `${r.pickup_label ?? ''} → ${r.dropoff_label ?? ''}` });
+        }
+        if (r.passenger_rating != null && r.passenger_rating <= maxStars) {
+          reviews.push({ tripId: r.id, at: r.at, kind: r.kind, direction: 'Captain rated passenger', stars: r.passenger_rating, comment: null,
+            from: { name: r.captain_name, phone: r.captain_phone }, about: { name: r.passenger_name, phone: r.passenger_phone }, route: `${r.pickup_label ?? ''} → ${r.dropoff_label ?? ''}` });
+        }
+      }
+      const avg = (col) => db.prepare(`SELECT AVG(${col}) AS a, COUNT(${col}) AS n FROM trips WHERE ${col} IS NOT NULL`).get();
+      const toCaptain = avg('rating');
+      const toPassenger = avg('passenger_rating');
+      const low = db.prepare('SELECT COUNT(*) AS v FROM trips WHERE rating <= 2 OR passenger_rating <= 2').get().v;
+      return {
+        summary: {
+          captainAverage: toCaptain.a == null ? null : round1(toCaptain.a), captainCount: toCaptain.n,
+          passengerAverage: toPassenger.a == null ? null : round1(toPassenger.a), passengerCount: toPassenger.n,
+          lowRatings: low,
+        },
+        reviews,
+      };
+    },
+    { roles: ['admin'] },
+  );
 
   // Which LivePay settings the server can see (yes or no only, never the values).
   router.add(
@@ -1910,6 +2082,7 @@ export function createApp({
         completedTotal: count("SELECT COUNT(*) AS v FROM trips WHERE status = 'completed'"),
         grossTotal: count("SELECT COALESCE(SUM(fare),0) AS v FROM trips WHERE status = 'completed'"),
         commissionTotal: count("SELECT COALESCE(SUM(commission),0) AS v FROM trips WHERE status = 'completed'"),
+        openIncidents: count("SELECT COUNT(*) AS v FROM incidents WHERE status = 'open'"),
         position: ledger.companyPosition(db),
       };
     },

@@ -4,6 +4,7 @@ export 'src/account_menu.dart';
 export 'src/api.dart';
 export 'src/auth_screen.dart';
 export 'src/cancel.dart';
+export 'src/emergency.dart';
 export 'src/entrance.dart';
 export 'src/captain_details.dart';
 export 'src/chat_screen.dart';
